@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arc Spaces</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Onboarding hint (shown once, overlays top) -->
+    <div id="onboarding" class="onboarding hidden">
+      <div class="onboarding-content">
+        <span class="onboarding-text">
+          Tip: Move the side panel to the left for an Arc-like experience.
+          Go to Chrome Settings &gt; Appearance &gt; Side panel position.
+        </span>
+        <button id="onboarding-dismiss" class="btn btn-ghost btn-sm">Got it</button>
+      </div>
+    </div>
+
+    <div id="app-body">
+      <!-- Left: narrow vertical space bar with workspace icons -->
+      <div id="space-bar"></div>
+
+      <!-- Right: main sidebar content -->
+      <div id="sidebar-main">
+        <!-- Workspace header: active workspace name + action buttons -->
+        <div id="workspace-header"></div>
+
+        <!-- Shortcut buttons bar (navigation/actions) -->
+        <div id="shortcut-bar"></div>
+
+        <!-- Scrollable content area -->
+        <div id="main-content">
+          <!-- Pinned section -->
+          <div id="pinned-section"></div>
+
+          <!-- Unpinned / Bookmarks section -->
+          <div id="unpinned-section"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>
