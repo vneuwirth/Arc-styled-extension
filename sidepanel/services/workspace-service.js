@@ -88,17 +88,26 @@ class WorkspaceService {
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
+        // Debug: log sync state for troubleshooting cross-device sync
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
+          console.log('Arc Spaces init: extension ID =', chrome.runtime.id);
+        }
+
         // 1. Try v2 format first (split keys)
         const meta = await storageService.getWorkspaceMeta();
+        console.log('Arc Spaces init: ws_meta =', JSON.stringify(meta));
         if (meta && meta.version === 2) {
+          console.log('Arc Spaces init: loading v2 format, workspaces:', meta.order);
           await this._loadV2(meta);
         } else {
           // 2. Check for v1 format (single "workspaces" key) and migrate
           const oldData = await storageService.getWorkspaces();
           if (oldData) {
+            console.log('Arc Spaces init: migrating v1 format');
             await this._migrateV1toV2(oldData);
           } else {
             // 3. No data at all — first-run setup
+            console.log('Arc Spaces init: no sync data found, running first-run setup');
             await this._firstRunSetup();
           }
         }
@@ -129,6 +138,7 @@ class WorkspaceService {
         // Validate that workspace folders still exist
         await this._validateFolders();
 
+        console.log('Arc Spaces init complete:', this._order.length, 'workspaces loaded:', this._order);
         return;
       } catch (err) {
         console.warn(`Arc Spaces init attempt ${attempt}/${MAX_RETRIES} failed:`, err);

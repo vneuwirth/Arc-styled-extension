@@ -4,6 +4,8 @@
 import { el, clearChildren } from '../utils/dom.js';
 import { bookmarkService } from '../services/bookmark-service.js';
 import { workspaceService } from '../services/workspace-service.js';
+import { themeService } from '../services/theme-service.js';
+import { showContextMenu } from './context-menu.js';
 import { bus, Events } from '../utils/event-bus.js';
 
 export class ActionBar {
@@ -32,13 +34,33 @@ export class ActionBar {
 
     const bar = el('div', { className: 'workspace-header-bar' });
 
-    // Workspace name (left side)
+    // Workspace name (left side) — clickable to show workspace menu
+    const nameGroup = el('div', {
+      className: 'workspace-header-name-group',
+      events: {
+        click: (e) => {
+          e.stopPropagation();
+          this._showWorkspaceMenu(ws, e);
+        }
+      }
+    });
+
     const name = el('span', {
       className: 'workspace-header-name',
       text: ws.name,
       style: { color: ws.color }
     });
-    bar.appendChild(name);
+    nameGroup.appendChild(name);
+
+    // "▾" dropdown indicator
+    const chevron = el('span', {
+      className: 'workspace-header-chevron',
+      text: '▾',
+      style: { color: ws.color }
+    });
+    nameGroup.appendChild(chevron);
+
+    bar.appendChild(nameGroup);
 
     // Add bookmark button
     bar.appendChild(this._createButton('Add current tab', `
@@ -64,6 +86,121 @@ export class ActionBar {
     btn.innerHTML = svgHtml;
     btn.addEventListener('click', onClick);
     return btn;
+  }
+
+  _showWorkspaceMenu(ws, e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const items = [];
+
+    // Rename
+    items.push({
+      label: 'Rename workspace',
+      action: () => this._startRename(ws)
+    });
+
+    // Change Color — submenu-style with color swatches
+    for (const c of workspaceService.colors) {
+      // We'll add all colors as a submenu via a single "Change color…" item
+    }
+    items.push({
+      label: 'Change color…',
+      action: () => this._showColorMenu(ws, rect)
+    });
+
+    items.push({ separator: true });
+
+    // Delete (only if more than 1 workspace)
+    if (workspaceService.getAll().length > 1) {
+      items.push({
+        label: 'Delete workspace',
+        danger: true,
+        action: async () => {
+          const confirmed = confirm(`Delete workspace "${ws.name}"? Its bookmarks will also be removed.`);
+          if (confirmed) {
+            await workspaceService.delete(ws.id);
+          }
+        }
+      });
+    }
+
+    items.push({ separator: true });
+
+    // Debug: show sync storage info
+    items.push({
+      label: 'Sync debug info',
+      action: async () => {
+        const allSync = await chrome.storage.sync.get(null);
+        const extId = chrome.runtime?.id || 'unknown';
+        const keys = Object.keys(allSync);
+        const wsKeys = keys.filter(k => k.startsWith('ws_'));
+        const totalSize = JSON.stringify(allSync).length;
+        alert(
+          `Extension ID: ${extId}\n` +
+          `Sync keys (${keys.length}): ${keys.join(', ')}\n` +
+          `Workspace keys: ${wsKeys.join(', ')}\n` +
+          `Total sync size: ${totalSize} bytes\n` +
+          `ws_meta: ${JSON.stringify(allSync.ws_meta || 'not found')}`
+        );
+      }
+    });
+
+    showContextMenu({ x: rect.left, y: rect.bottom + 4, items });
+  }
+
+  _showColorMenu(ws, fromRect) {
+    const colors = workspaceService.colors;
+    const items = colors.map(c => ({
+      label: `${c.name === ws.colorScheme ? '● ' : '  '}${c.name.charAt(0).toUpperCase() + c.name.slice(1)}`,
+      action: async () => {
+        await workspaceService.changeColor(ws.id, c.name);
+        if (ws.id === workspaceService.getActive()?.id) {
+          themeService.apply(c.name);
+        }
+        this.render();
+      }
+    }));
+    showContextMenu({ x: fromRect.left, y: fromRect.bottom + 4, items });
+  }
+
+  _startRename(ws) {
+    // Replace the workspace name in the header with an inline input
+    const nameGroup = this.container.querySelector('.workspace-header-name-group');
+    if (!nameGroup) return;
+
+    const input = el('input', {
+      className: 'workspace-rename-input inline-header-rename',
+      attrs: {
+        type: 'text',
+        value: ws.name,
+        maxlength: '30'
+      },
+      style: { color: ws.color }
+    });
+
+    clearChildren(nameGroup);
+    nameGroup.appendChild(input);
+
+    // Stop clicks on input from re-opening the menu
+    input.addEventListener('click', (e) => e.stopPropagation());
+
+    let committed = false;
+    const commit = async () => {
+      if (committed) return;
+      committed = true;
+      const newName = input.value.trim();
+      if (newName && newName !== ws.name) {
+        await workspaceService.rename(ws.id, newName);
+      }
+      this.render();
+    };
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { e.preventDefault(); committed = true; this.render(); }
+    });
+    input.addEventListener('blur', () => commit());
+
+    requestAnimationFrame(() => { input.focus(); input.select(); });
   }
 
   async _addBookmark() {

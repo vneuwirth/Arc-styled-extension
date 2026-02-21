@@ -193,6 +193,14 @@ class App {
   }
 }
 
+// Prevent Chrome's default context menu in the side panel.
+// Our own context menus use e.preventDefault() on specific elements,
+// but we also need to suppress the browser default everywhere so
+// right-click on workspace icons (and other elements) works reliably.
+document.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+});
+
 // Start the app when the DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
   const app = new App();
