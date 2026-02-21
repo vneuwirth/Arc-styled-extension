@@ -1,9 +1,11 @@
 // Workspace switcher — vertical space bar (Arc-style colored circle icons)
+// Right-click context menu for Rename / Change Color / Delete
 
 import { el, clearChildren } from '../utils/dom.js';
 import { workspaceService } from '../services/workspace-service.js';
 import { themeService } from '../services/theme-service.js';
 import { storageService } from '../services/storage-service.js';
+import { showContextMenu } from './context-menu.js';
 import { bus, Events } from '../utils/event-bus.js';
 
 export class WorkspaceSwitcher {
@@ -51,10 +53,10 @@ export class WorkspaceSwitcher {
         dataset: { tooltip: ws.name, workspaceId: ws.id },
         events: {
           click: () => this._switchWorkspace(ws.id),
-          dblclick: (e) => {
+          contextmenu: (e) => {
             e.preventDefault();
             e.stopPropagation();
-            this._showRenamePopover(ws, btn);
+            this._showWorkspaceContextMenu(ws, { x: e.clientX, y: e.clientY });
           }
         }
       });
@@ -116,6 +118,105 @@ export class WorkspaceSwitcher {
     if (!appBody) return;
     const isCompact = appBody.classList.toggle('compact');
     await storageService.setSidebarCompact(isCompact);
+  }
+
+  // ── Workspace Context Menu ──────────────────────────
+  _showWorkspaceContextMenu(ws, pos) {
+    const items = [];
+
+    // Rename
+    items.push({
+      label: 'Rename',
+      action: () => {
+        const anchorBtn = this.container.querySelector(`[data-workspace-id="${ws.id}"]`);
+        if (anchorBtn) {
+          this._showRenamePopover(ws, anchorBtn);
+        }
+      }
+    });
+
+    // Change Color submenu — show as color swatches in context menu
+    items.push({
+      label: 'Change color…',
+      action: () => {
+        const anchorBtn = this.container.querySelector(`[data-workspace-id="${ws.id}"]`);
+        if (anchorBtn) {
+          this._showColorPopover(ws, anchorBtn);
+        }
+      }
+    });
+
+    items.push({ separator: true });
+
+    // Delete (disabled if only 1 workspace)
+    if (workspaceService.getAll().length > 1) {
+      items.push({
+        label: 'Delete workspace',
+        danger: true,
+        action: async () => {
+          const confirmed = confirm(`Delete workspace "${ws.name}"? Its bookmarks will also be removed.`);
+          if (confirmed) {
+            await workspaceService.delete(ws.id);
+          }
+        }
+      });
+    }
+
+    showContextMenu({ x: pos.x, y: pos.y, items });
+  }
+
+  // ── Color Picker Popover ──────────────────────────
+  _showColorPopover(ws, anchorBtn) {
+    this._closePopover();
+
+    const popover = el('div', { className: 'space-create-popover' });
+
+    // Position next to the anchor
+    const rect = anchorBtn.getBoundingClientRect();
+    popover.style.top = `${rect.top}px`;
+    popover.style.transform = 'none';
+
+    // Label
+    const label = el('div', {
+      className: 'popover-label',
+      text: 'Choose a color'
+    });
+    popover.appendChild(label);
+
+    // Color picker
+    const colorPicker = el('div', { className: 'color-picker' });
+    const colors = workspaceService.colors;
+
+    for (const c of colors) {
+      const swatch = el('button', {
+        className: ['color-swatch', c.name === ws.colorScheme ? 'selected' : ''],
+        style: { backgroundColor: c.color },
+        attrs: { title: c.name, type: 'button' },
+        events: {
+          click: async () => {
+            await workspaceService.changeColor(ws.id, c.name);
+            this._closePopover();
+            this.render();
+          }
+        }
+      });
+      colorPicker.appendChild(swatch);
+    }
+
+    popover.appendChild(colorPicker);
+
+    document.body.appendChild(popover);
+    this._popover = popover;
+
+    // Close on outside click
+    requestAnimationFrame(() => {
+      this._outsideClickHandler = (e) => {
+        if (this._popover && !this._popover.contains(e.target) && !this.container.contains(e.target)) {
+          this._closePopover();
+        }
+      };
+      document.addEventListener('click', this._outsideClickHandler, true);
+    });
   }
 
   // ── Create Popover ─────────────────────────────────
@@ -249,20 +350,6 @@ export class WorkspaceSwitcher {
       }
     });
 
-    const deleteBtn = el('button', {
-      className: 'btn btn-ghost btn-sm',
-      text: 'Delete',
-      style: { color: '#EF4444' },
-      attrs: { type: 'button' },
-      events: {
-        click: async () => {
-          if (workspaceService.getAll().length <= 1) return;
-          await workspaceService.delete(ws.id);
-          this._closePopover();
-        }
-      }
-    });
-
     const cancelBtn = el('button', {
       className: 'btn btn-ghost btn-sm',
       text: 'Cancel',
@@ -271,7 +358,6 @@ export class WorkspaceSwitcher {
     });
 
     actions.appendChild(saveBtn);
-    actions.appendChild(deleteBtn);
     actions.appendChild(cancelBtn);
 
     popover.appendChild(input);

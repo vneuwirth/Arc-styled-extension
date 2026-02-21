@@ -225,6 +225,13 @@ body {
   margin-bottom: 8px;
 }
 
+.popover-label {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
 /* ============================================
    Sidebar Main (right content area)
    ============================================ */

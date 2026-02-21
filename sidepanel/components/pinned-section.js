@@ -1,5 +1,6 @@
 // Pinned section — displays bookmarks pinned in the active workspace
 // Supports right-click context menu for rename, unpin, delete
+// Supports folder expand/collapse inline and drag-and-drop reordering
 
 import { el, clearChildren } from '../utils/dom.js';
 import { createBookmarkItem } from './bookmark-item.js';
@@ -15,6 +16,9 @@ export class PinnedSection {
   constructor(container) {
     this.container = container;
     this._unsubscribers = [];
+    this._refreshing = false;     // Guard against concurrent refreshes
+    this._pendingRefresh = false;  // Queue a refresh if one is in-flight
+    this._expandedPinned = new Set(); // Track expanded pinned folders
   }
 
   async init() {
@@ -34,42 +38,111 @@ export class PinnedSection {
   }
 
   async refresh() {
-    clearChildren(this.container);
-
-    const ws = workspaceService.getActive();
-    if (!ws || !ws.pinnedBookmarkIds || ws.pinnedBookmarkIds.length === 0) {
-      this.container.classList.add('hidden');
+    // Guard: if a refresh is already running, queue one and return
+    if (this._refreshing) {
+      this._pendingRefresh = true;
       return;
     }
+    this._refreshing = true;
 
-    this.container.classList.remove('hidden');
+    try {
+      clearChildren(this.container);
 
-    // Header
-    const header = el('div', { className: 'section-header' });
-    header.appendChild(el('span', { text: 'Pinned', className: 'section-label' }));
-    this.container.appendChild(header);
+      const ws = workspaceService.getActive();
+      if (!ws || !ws.pinnedBookmarkIds || ws.pinnedBookmarkIds.length === 0) {
+        this.container.classList.add('hidden');
+        return;
+      }
 
-    // Fetch pinned bookmarks
-    const bookmarks = await bookmarkService.getMultiple(ws.pinnedBookmarkIds);
+      this.container.classList.remove('hidden');
 
-    const list = el('div', { className: 'pinned-list' });
+      // Header
+      const header = el('div', { className: 'section-header' });
+      header.appendChild(el('span', { text: 'Pinned', className: 'section-label' }));
+      this.container.appendChild(header);
 
-    for (const bm of bookmarks) {
-      const item = createBookmarkItem(bm, {
-        depth: 0,
-        isExpanded: false,
-        isPinned: true,
-        onClick: (node) => this._openBookmark(node),
+      // Fetch pinned bookmarks
+      const bookmarks = await bookmarkService.getMultiple(ws.pinnedBookmarkIds);
+
+      const list = el('div', { className: 'pinned-list' });
+
+      for (const bm of bookmarks) {
+        const isFolder = !bm.url;
+        const isExpanded = this._expandedPinned.has(bm.id);
+
+        const item = createBookmarkItem(bm, {
+          depth: 0,
+          isExpanded,
+          isPinned: true,
+          onToggle: isFolder ? (id) => this._togglePinnedFolder(id) : undefined,
+          onClick: (node) => this._handleClick(node),
+          onContextMenu: (node, pos) => this._showContextMenu(node, pos)
+        });
+        list.appendChild(item);
+
+        // Render children if pinned folder is expanded
+        if (isFolder && isExpanded && bm.children && bm.children.length > 0) {
+          this._renderChildren(bm.children, 1, list);
+        }
+      }
+
+      this.container.appendChild(list);
+    } finally {
+      this._refreshing = false;
+      // If a refresh was queued while we were running, do it now
+      if (this._pendingRefresh) {
+        this._pendingRefresh = false;
+        this.refresh();
+      }
+    }
+  }
+
+  /**
+   * Render child nodes of an expanded pinned folder.
+   */
+  _renderChildren(children, depth, list) {
+    for (const child of children) {
+      const isFolder = !child.url;
+      const isExpanded = this._expandedPinned.has(child.id);
+
+      const item = createBookmarkItem(child, {
+        depth,
+        isExpanded,
+        isPinned: false, // Children aren't individually pinned
+        onToggle: isFolder ? (id) => this._togglePinnedFolder(id) : undefined,
+        onClick: (node) => this._handleClick(node),
         onContextMenu: (node, pos) => this._showContextMenu(node, pos)
       });
       list.appendChild(item);
-    }
 
-    this.container.appendChild(list);
+      if (isFolder && isExpanded && child.children && child.children.length > 0) {
+        this._renderChildren(child.children, depth + 1, list);
+      }
+    }
   }
 
-  _openBookmark(node) {
-    if (node.url) {
+  /**
+   * Toggle a pinned folder's expanded state.
+   */
+  _togglePinnedFolder(folderId) {
+    if (this._expandedPinned.has(folderId)) {
+      this._expandedPinned.delete(folderId);
+    } else {
+      this._expandedPinned.add(folderId);
+    }
+    this.refresh();
+  }
+
+  /**
+   * Handle click on a pinned item.
+   * Folders toggle expand/collapse, bookmarks open in current tab.
+   */
+  _handleClick(node) {
+    if (!node.url) {
+      // Folder — toggle expand/collapse
+      this._togglePinnedFolder(node.id);
+    } else {
+      // Bookmark — open in current tab
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0]) {
           chrome.tabs.update(tabs[0].id, { url: node.url });
@@ -95,13 +168,15 @@ export class PinnedSection {
       action: () => this._startInlineRename(node)
     });
 
-    // Unpin (always — these are pinned items)
-    items.push({
-      label: 'Unpin',
-      action: async () => {
-        await workspaceService.unpinBookmark(node.id);
-      }
-    });
+    // Unpin (only for top-level pinned items)
+    if (workspaceService.isPinned(node.id)) {
+      items.push({
+        label: 'Unpin',
+        action: async () => {
+          await workspaceService.unpinBookmark(node.id);
+        }
+      });
+    }
 
     // Open in new tab (bookmarks only)
     if (!isFolder && node.url) {
@@ -118,7 +193,9 @@ export class PinnedSection {
       label: 'Delete',
       danger: true,
       action: async () => {
-        await workspaceService.unpinBookmark(node.id);
+        if (workspaceService.isPinned(node.id)) {
+          await workspaceService.unpinBookmark(node.id);
+        }
         if (isFolder) {
           await bookmarkService.removeTree(node.id);
         } else {

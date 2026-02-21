@@ -28,6 +28,9 @@ class WorkspaceService {
     this._items = {};        // workspace items keyed by ID
     this._localState = null; // { activeWorkspaceId, rootFolderIds }
     this._arcSpacesRootId = null;
+    // Delay before first-run setup writes — gives Chrome sync time to propagate.
+    // Can be set to 0 in tests.
+    this._firstRunDelayMs = 2000;
   }
 
   get colors() {
@@ -217,6 +220,9 @@ class WorkspaceService {
    * First-run: create the Arc Spaces folder and default workspace.
    * Includes a safety re-check to avoid overwriting synced data from another device
    * (sync data may arrive slightly after the first read).
+   *
+   * On a new device where sync data may still be propagating, we delay the sync
+   * write briefly so incoming data from another device can arrive first.
    */
   async _firstRunSetup() {
     // Safety re-check: v2 data may have arrived since our first read
@@ -229,6 +235,24 @@ class WorkspaceService {
     const freshV1 = await storageService.getWorkspaces();
     if (freshV1) {
       await this._migrateV1toV2(freshV1);
+      return;
+    }
+
+    // Wait briefly for sync data to arrive from another device.
+    // Chrome sync can take seconds to propagate after extension install.
+    if (this._firstRunDelayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, this._firstRunDelayMs));
+    }
+
+    // Re-check after waiting — sync data may have arrived
+    const delayedMeta = await storageService.getWorkspaceMeta();
+    if (delayedMeta && delayedMeta.version === 2) {
+      await this._loadV2(delayedMeta);
+      return;
+    }
+    const delayedV1 = await storageService.getWorkspaces();
+    if (delayedV1) {
+      await this._migrateV1toV2(delayedV1);
       return;
     }
 
@@ -326,6 +350,9 @@ class WorkspaceService {
         changed = true;
         continue;
       }
+      // Skip validation if rootFolderId was never assigned
+      // (e.g., synced workspace on a device where _reconcileFolders hasn't run yet)
+      if (!ws.rootFolderId) continue;
       const folder = await bookmarkService.get(ws.rootFolderId);
       if (!folder) {
         delete this._items[id];
@@ -370,12 +397,13 @@ class WorkspaceService {
    * This method matches folders by name and creates missing ones.
    */
   async _reconcileFolders() {
-    if (!this._order || this._order.length === 0 || !this._arcSpacesRootId) return;
+    if (!this._order || this._order.length === 0) return;
 
-    // Ensure the Arc Spaces root folder exists locally
-    const rootFolder = await bookmarkService.get(this._arcSpacesRootId);
-    if (!rootFolder) {
-      // Root doesn't exist locally — find or create it
+    // Ensure the Arc Spaces root folder exists locally.
+    // On a new device, _arcSpacesRootId will be null (no local storage yet).
+    // We must find or create the root folder before we can reconcile workspace folders.
+    if (!this._arcSpacesRootId) {
+      // New device: find existing "Arc Spaces" folder or create one
       const existing = await bookmarkService.search('Arc Spaces');
       const found = existing.find(b => !b.url && b.title === 'Arc Spaces');
       if (found) {
@@ -388,8 +416,26 @@ class WorkspaceService {
         });
         this._arcSpacesRootId = folder.id;
       }
-      // Save to LOCAL storage (not sync) — this is a device-local bookmark ID
       await storageService.saveArcSpacesRootIdLocal(this._arcSpacesRootId);
+    } else {
+      // Have a cached root ID — verify the folder still exists
+      const rootFolder = await bookmarkService.get(this._arcSpacesRootId);
+      if (!rootFolder) {
+        // Root folder was deleted — find or re-create it
+        const existing = await bookmarkService.search('Arc Spaces');
+        const found = existing.find(b => !b.url && b.title === 'Arc Spaces');
+        if (found) {
+          this._arcSpacesRootId = found.id;
+        } else {
+          const otherBookmarksId = await this._getOtherBookmarksId();
+          const folder = await bookmarkService.create({
+            parentId: otherBookmarksId,
+            title: 'Arc Spaces'
+          });
+          this._arcSpacesRootId = folder.id;
+        }
+        await storageService.saveArcSpacesRootIdLocal(this._arcSpacesRootId);
+      }
     }
 
     const localChildren = await bookmarkService.getChildren(this._arcSpacesRootId);

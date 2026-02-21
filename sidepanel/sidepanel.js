@@ -87,6 +87,15 @@ class App {
         }
       });
 
+      // Also listen for sync relay messages from the service worker.
+      // The service worker forwards sync:changed events so the side panel
+      // can pick up changes that happened while it was closed.
+      chrome.runtime.onMessage.addListener((message) => {
+        if (message && message.type === 'sync:changed') {
+          this._handleRemoteSync();
+        }
+      });
+
     } catch (err) {
       console.error('Arc Spaces init error:', err);
       this._showError(err);

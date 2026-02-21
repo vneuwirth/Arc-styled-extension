@@ -39,6 +39,8 @@ async function seedV2Workspaces({ workspaces, arcRootId }) {
 describe('WorkspaceService', () => {
   beforeEach(() => {
     resetMocks();
+    // Disable first-run delay in tests (normally 2s to let Chrome sync propagate)
+    workspaceService._firstRunDelayMs = 0;
   });
 
   // ── init() — first run ─────────────────────────
@@ -566,6 +568,86 @@ describe('WorkspaceService', () => {
 
       const ws = workspaceService.getActive();
       expect(ws.pinnedBookmarkIds).toEqual([]);
+    });
+  });
+
+  // ── New device sync (arcSpacesRootId is null) ──
+
+  describe('new device sync (no local state)', () => {
+    it('syncs workspaces when arcSpacesRootId is null (new device)', async () => {
+      // Simulate Device A having already created workspaces in sync storage
+      // But Device B has NO local state at all (no arcSpacesRootId, no ws_local)
+
+      // Seed v2 data into sync storage WITHOUT local state
+      await storageService.saveWorkspaceItem('ws1', {
+        id: 'ws1', name: 'Personal', icon: 'folder', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [],
+        created: Date.now(),
+      });
+      await storageService.saveWorkspaceItem('ws2', {
+        id: 'ws2', name: 'Work', icon: 'folder', color: '#3B82F6',
+        colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [],
+        created: Date.now(),
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws1', 'ws2'], version: 2 });
+      // Do NOT seed ws_local or arcSpacesRootId — simulating a brand new device
+
+      await workspaceService.init();
+
+      // Both workspaces should be loaded
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(2);
+      expect(all.map(ws => ws.name).sort()).toEqual(['Personal', 'Work']);
+
+      // Each should have a valid rootFolderId (created locally)
+      for (const ws of all) {
+        expect(ws.rootFolderId).toBeTruthy();
+        const folder = await bookmarkService.get(ws.rootFolderId);
+        expect(folder).toBeTruthy();
+        expect(folder.title).toBe(ws.name);
+      }
+
+      // arcSpacesRootId should now be set in local storage
+      const arcRootId = await storageService.getArcSpacesRootIdLocal();
+      expect(arcRootId).toBeTruthy();
+    });
+
+    it('finds existing Arc Spaces root on new device', async () => {
+      // Arc Spaces folder already exists from a previous install
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const personalFolder = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+
+      // Sync data present but no local state
+      await storageService.saveWorkspaceItem('ws1', {
+        id: 'ws1', name: 'Personal', icon: 'folder', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [],
+        created: Date.now(),
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws1'], version: 2 });
+
+      await workspaceService.init();
+
+      const ws = workspaceService.getActive();
+      expect(ws).toBeTruthy();
+      // Should reuse existing "Personal" folder, not create a new one
+      expect(ws.rootFolderId).toBe(personalFolder.id);
+    });
+
+    it('validates folders skip workspaces with no rootFolderId', async () => {
+      // Sync data present, no local state, _reconcileFolders should assign folders
+      // but if it doesn't for any reason, _validateFolders should NOT delete the workspace
+      await storageService.saveWorkspaceItem('ws1', {
+        id: 'ws1', name: 'TestWs', icon: 'folder', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [],
+        created: Date.now(),
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws1'], version: 2 });
+
+      await workspaceService.init();
+
+      // Workspace should still exist (not deleted by _validateFolders)
+      const all = workspaceService.getAll();
+      expect(all.length).toBeGreaterThanOrEqual(1);
     });
   });
 

@@ -17,6 +17,8 @@ export class BookmarkTree {
     this.container = container;
     this.expandedFolders = new Set();
     this._unsubscribers = [];
+    this._refreshing = false;     // Guard against concurrent refreshes
+    this._pendingRefresh = false;  // Queue a refresh if one is in-flight
   }
 
   /**
@@ -77,41 +79,57 @@ export class BookmarkTree {
    * Refresh the tree from the current workspace's bookmark folder.
    */
   async refresh() {
-    const ws = workspaceService.getActive();
-    if (!ws) {
-      this._renderEmpty('No workspace selected');
+    // Guard: if a refresh is already running, queue one and return
+    if (this._refreshing) {
+      this._pendingRefresh = true;
       return;
     }
+    this._refreshing = true;
 
-    // Load expanded state for this workspace
-    const uiState = await storageService.getUIState();
-    if (uiState.expandedFolders && uiState.expandedFolders[ws.id]) {
-      this.expandedFolders = new Set(uiState.expandedFolders[ws.id]);
-    } else {
-      this.expandedFolders = new Set();
+    try {
+      const ws = workspaceService.getActive();
+      if (!ws) {
+        this._renderEmpty('No workspace selected');
+        return;
+      }
+
+      // Load expanded state for this workspace
+      const uiState = await storageService.getUIState();
+      if (uiState.expandedFolders && uiState.expandedFolders[ws.id]) {
+        this.expandedFolders = new Set(uiState.expandedFolders[ws.id]);
+      } else {
+        this.expandedFolders = new Set();
+      }
+
+      const subtree = await bookmarkService.getSubTree(ws.rootFolderId);
+      if (!subtree || subtree.length === 0) {
+        this._renderEmpty('Folder not found');
+        return;
+      }
+
+      const rootNode = subtree[0];
+      const children = rootNode.children || [];
+
+      // Filter out pinned items (they're shown in the pinned section)
+      const pinnedIds = new Set(ws.pinnedBookmarkIds || []);
+      const unpinnedChildren = children.filter(c => !pinnedIds.has(c.id));
+
+      clearChildren(this.container);
+
+      if (unpinnedChildren.length === 0) {
+        this._renderEmpty('No bookmarks yet. Use the + button to add bookmarks.');
+        return;
+      }
+
+      this._renderNodes(unpinnedChildren, 0);
+    } finally {
+      this._refreshing = false;
+      // If a refresh was queued while we were running, do it now
+      if (this._pendingRefresh) {
+        this._pendingRefresh = false;
+        this.refresh();
+      }
     }
-
-    const subtree = await bookmarkService.getSubTree(ws.rootFolderId);
-    if (!subtree || subtree.length === 0) {
-      this._renderEmpty('Folder not found');
-      return;
-    }
-
-    const rootNode = subtree[0];
-    const children = rootNode.children || [];
-
-    // Filter out pinned items (they're shown in the pinned section)
-    const pinnedIds = new Set(ws.pinnedBookmarkIds || []);
-    const unpinnedChildren = children.filter(c => !pinnedIds.has(c.id));
-
-    clearChildren(this.container);
-
-    if (unpinnedChildren.length === 0) {
-      this._renderEmpty('No bookmarks yet. Use the + button to add bookmarks.');
-      return;
-    }
-
-    this._renderNodes(unpinnedChildren, 0);
   }
 
   /**
