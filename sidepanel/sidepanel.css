@@ -915,7 +915,6 @@ body {
 
 /* ── Context Menu Submenu ── */
 .context-menu-item-submenu {
-  position: relative;
   justify-content: space-between;
 }
 
@@ -929,7 +928,7 @@ body {
 
 .context-submenu {
   display: none;
-  position: absolute;
+  position: fixed;
   z-index: 301;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -942,6 +941,61 @@ body {
 
 .context-submenu-visible {
   display: block;
+}
+
+/* ============================================
+   Inline Rename Input
+   ============================================ */
+/* ============================================
+   Reinstall Prompt
+   ============================================ */
+.reinstall-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.reinstall-prompt.hidden {
+  display: none;
+}
+
+.reinstall-prompt-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  padding: 24px 20px;
+  max-width: 260px;
+  text-align: center;
+}
+
+.reinstall-prompt-icon {
+  color: var(--arc-primary);
+  margin-bottom: 8px;
+}
+
+.reinstall-prompt-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.reinstall-prompt-text {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.reinstall-prompt-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
 }
 
 /* ============================================

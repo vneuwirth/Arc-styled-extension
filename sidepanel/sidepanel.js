@@ -25,6 +25,11 @@ class App {
       // Initialize workspace service (loads from storage or runs first-time setup)
       await workspaceService.init();
 
+      // Check if reinstall prompt is needed (sync data exists but local is missing)
+      if (workspaceService.needsReinstallPrompt) {
+        await this._showReinstallPrompt();
+      }
+
       // Apply the active workspace's theme
       const activeWs = workspaceService.getActive();
       if (activeWs) {
@@ -154,6 +159,38 @@ class App {
         }
       }
     }
+  }
+
+  /**
+   * Show reinstall prompt modal. Returns a promise that resolves
+   * when the user makes a choice (Restore or Start Fresh).
+   */
+  _showReinstallPrompt() {
+    return new Promise((resolve) => {
+      const prompt = document.getElementById('reinstall-prompt');
+      if (!prompt) {
+        // No prompt element in HTML — fall back to restoring silently
+        workspaceService.continueInit().then(resolve);
+        return;
+      }
+
+      prompt.classList.remove('hidden');
+
+      const restoreBtn = document.getElementById('reinstall-restore');
+      const freshBtn = document.getElementById('reinstall-fresh');
+
+      restoreBtn.addEventListener('click', async () => {
+        prompt.classList.add('hidden');
+        await workspaceService.continueInit();
+        resolve();
+      }, { once: true });
+
+      freshBtn.addEventListener('click', async () => {
+        prompt.classList.add('hidden');
+        await workspaceService.resetAndSetup();
+        resolve();
+      }, { once: true });
+    });
   }
 
   _handleSettingsSync(newSettings) {

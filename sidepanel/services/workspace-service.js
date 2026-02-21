@@ -31,6 +31,9 @@ class WorkspaceService {
     // Delay before first-run setup writes — gives Chrome sync time to propagate.
     // Can be set to 0 in tests.
     this._firstRunDelayMs = 2000;
+    // Reinstall prompt: set when sync data exists but local state is missing
+    this.needsReinstallPrompt = false;
+    this._reinstallMeta = null;
   }
 
   get colors() {
@@ -115,6 +118,10 @@ class WorkspaceService {
     const MAX_RETRIES = 3;
     const RETRY_DELAY_MS = 500;
 
+    // Reset reinstall prompt state (may be stale from a previous init call)
+    this.needsReinstallPrompt = false;
+    this._reinstallMeta = null;
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         // Debug: log sync state for troubleshooting cross-device sync
@@ -126,6 +133,20 @@ class WorkspaceService {
         const meta = await storageService.getWorkspaceMeta();
         console.log('Arc Spaces init: ws_meta =', JSON.stringify(meta));
         if (meta && meta.version === 2) {
+          // Check for reinstall/new-device: sync data exists but local state is missing
+          const localCheck = await storageService.getWorkspaceLocal();
+          const isReinstall = (!localCheck.activeWorkspaceId &&
+                               Object.keys(localCheck.rootFolderIds || {}).length === 0);
+
+          if (isReinstall) {
+            // Load workspaces so we can show names in the prompt
+            await this._loadV2(meta);
+            this._reinstallMeta = meta;
+            this.needsReinstallPrompt = true;
+            console.log('Arc Spaces: reinstall detected, prompting user');
+            return;
+          }
+
           console.log('Arc Spaces init: loading v2 format, workspaces:', meta.order);
           await this._loadV2(meta);
         } else {
@@ -141,33 +162,7 @@ class WorkspaceService {
           }
         }
 
-        // Load device-local state
-        this._localState = await storageService.getWorkspaceLocal();
-        this._arcSpacesRootId = await storageService.getArcSpacesRootIdLocal();
-
-        // Use local activeWorkspaceId (fallback to first in order)
-        if (!this._localState.activeWorkspaceId || !this._items[this._localState.activeWorkspaceId]) {
-          this._localState.activeWorkspaceId = this._order[0] || null;
-        }
-
-        // Attach rootFolderIds from local state to in-memory items
-        for (const wsId of this._order) {
-          if (this._items[wsId] && this._localState.rootFolderIds[wsId]) {
-            this._items[wsId].rootFolderId = this._localState.rootFolderIds[wsId];
-          }
-        }
-
-        // Reconcile bookmark folder IDs for synced workspaces
-        // (folder IDs are local — they differ across devices)
-        await this._reconcileFolders();
-
-        // Reconcile pinned bookmark IDs across devices
-        await this._reconcilePinnedBookmarks();
-
-        // Validate that workspace folders still exist
-        await this._validateFolders();
-
-        console.log('Arc Spaces init complete:', this._order.length, 'workspaces loaded:', this._order);
+        await this._completeInit();
         return;
       } catch (err) {
         console.warn(`Arc Spaces init attempt ${attempt}/${MAX_RETRIES} failed:`, err);
@@ -178,6 +173,80 @@ class WorkspaceService {
         }
       }
     }
+  }
+
+  /**
+   * Complete initialization: load local state, reconcile folders, validate.
+   * Shared by init(), continueInit(), and resetAndSetup().
+   */
+  async _completeInit() {
+    // Load device-local state
+    this._localState = await storageService.getWorkspaceLocal();
+    this._arcSpacesRootId = await storageService.getArcSpacesRootIdLocal();
+
+    // Use local activeWorkspaceId (fallback to first in order)
+    if (!this._localState.activeWorkspaceId || !this._items[this._localState.activeWorkspaceId]) {
+      this._localState.activeWorkspaceId = this._order[0] || null;
+    }
+
+    // Attach rootFolderIds from local state to in-memory items
+    for (const wsId of this._order) {
+      if (this._items[wsId] && this._localState.rootFolderIds[wsId]) {
+        this._items[wsId].rootFolderId = this._localState.rootFolderIds[wsId];
+      }
+    }
+
+    // Reconcile bookmark folder IDs for synced workspaces
+    // (folder IDs are local — they differ across devices)
+    await this._reconcileFolders();
+
+    // Reconcile pinned bookmark IDs across devices
+    await this._reconcilePinnedBookmarks();
+
+    // Validate that workspace folders still exist
+    await this._validateFolders();
+
+    console.log('Arc Spaces init complete:', this._order.length, 'workspaces loaded:', this._order);
+  }
+
+  /**
+   * Continue initialization after reinstall prompt — user chose "Restore".
+   * Runs the remaining init steps that were deferred.
+   */
+  async continueInit() {
+    this.needsReinstallPrompt = false;
+    this._reinstallMeta = null;
+    await this._completeInit();
+  }
+
+  /**
+   * Clear all sync data and run first-time setup from scratch.
+   * Called when user chooses "Start Fresh" on reinstall prompt.
+   */
+  async resetAndSetup() {
+    this.needsReinstallPrompt = false;
+
+    // Delete all workspace items and ws_meta from sync
+    if (this._reinstallMeta && this._reinstallMeta.order) {
+      for (const wsId of this._reinstallMeta.order) {
+        await storageService.deleteWorkspaceItem(wsId);
+      }
+    }
+    try {
+      await chrome.storage.sync.remove('ws_meta');
+    } catch { /* ignore */ }
+
+    this._reinstallMeta = null;
+    this._order = [];
+    this._items = {};
+    this._localState = null;
+    this._arcSpacesRootId = null;
+
+    // Run first-time setup (creates default workspace)
+    await this._firstRunSetup();
+
+    // Complete the remaining init steps
+    await this._completeInit();
   }
 
   /**

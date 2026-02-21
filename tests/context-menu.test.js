@@ -125,7 +125,7 @@ describe('ContextMenu', () => {
     closeContextMenu();
   });
 
-  // ── Submenu Support ────────────────────────────
+  // ── Submenu Support (body-appended on hover) ────────────
 
   it('renders a submenu item with chevron when children are provided', () => {
     showContextMenu({
@@ -149,7 +149,12 @@ describe('ContextMenu', () => {
     const chevron = submenuItem.querySelector('.context-menu-submenu-chevron');
     expect(chevron).toBeTruthy();
 
-    const submenu = submenuItem.querySelector('.context-submenu');
+    // Submenu is NOT in the DOM until hover
+    expect(document.querySelector('.context-submenu')).toBeFalsy();
+
+    // Trigger hover — submenu should appear in body
+    submenuItem.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    const submenu = document.querySelector('.context-submenu');
     expect(submenu).toBeTruthy();
 
     const subItems = submenu.querySelectorAll('.context-menu-item');
@@ -158,7 +163,7 @@ describe('ContextMenu', () => {
     expect(subItems[1].textContent).toBe('Personal');
   });
 
-  it('submenu is hidden by default', () => {
+  it('submenu is not in DOM by default', () => {
     showContextMenu({
       x: 0,
       y: 0,
@@ -170,8 +175,8 @@ describe('ContextMenu', () => {
       ],
     });
 
-    const submenu = document.querySelector('.context-submenu');
-    expect(submenu.classList.contains('context-submenu-visible')).toBe(false);
+    // Submenu only exists as a detached element until mouseenter
+    expect(document.querySelector('.context-submenu')).toBeFalsy();
   });
 
   it('shows submenu on mouseenter', () => {
@@ -187,9 +192,10 @@ describe('ContextMenu', () => {
     });
 
     const submenuItem = document.querySelector('.context-menu-item-submenu');
-    const submenu = submenuItem.querySelector('.context-submenu');
-
     submenuItem.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+
+    const submenu = document.querySelector('.context-submenu');
+    expect(submenu).toBeTruthy();
     expect(submenu.classList.contains('context-submenu-visible')).toBe(true);
   });
 
@@ -206,15 +212,14 @@ describe('ContextMenu', () => {
     });
 
     const submenuItem = document.querySelector('.context-menu-item-submenu');
-    const submenu = submenuItem.querySelector('.context-submenu');
 
     // Show it first
     submenuItem.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-    expect(submenu.classList.contains('context-submenu-visible')).toBe(true);
+    expect(document.querySelector('.context-submenu')).toBeTruthy();
 
     // Leave to outside (relatedTarget null = left entirely)
     submenuItem.dispatchEvent(new MouseEvent('mouseleave', { bubbles: true, relatedTarget: null }));
-    expect(submenu.classList.contains('context-submenu-visible')).toBe(false);
+    expect(document.querySelector('.context-submenu')).toBeFalsy();
   });
 
   it('calls submenu child action and closes menu on click', () => {
@@ -230,12 +235,17 @@ describe('ContextMenu', () => {
       ],
     });
 
+    // Hover to reveal submenu
+    const submenuItem = document.querySelector('.context-menu-item-submenu');
+    submenuItem.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+
     const submenu = document.querySelector('.context-submenu');
     const childItem = submenu.querySelector('.context-menu-item');
     childItem.click();
 
     expect(clicked).toBe(true);
     expect(document.querySelector('.context-menu')).toBeFalsy();
+    expect(document.querySelector('.context-submenu')).toBeFalsy();
   });
 
   it('renders separators inside submenus', () => {
@@ -253,6 +263,10 @@ describe('ContextMenu', () => {
         },
       ],
     });
+
+    // Hover to reveal submenu
+    const submenuItem = document.querySelector('.context-menu-item-submenu');
+    submenuItem.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
 
     const submenu = document.querySelector('.context-submenu');
     const separators = submenu.querySelectorAll('.context-menu-separator');
@@ -296,14 +310,75 @@ describe('ContextMenu', () => {
       ],
     });
 
-    const allItems = document.querySelectorAll('.context-menu-item');
-    // Rename + Move to… (submenu parent) + Work (sub-item) + Delete = 4
-    expect(allItems.length).toBe(4);
+    // Before hover: only menu items (no sub-items in DOM)
+    const menuItems = document.querySelectorAll('.context-menu .context-menu-item');
+    // Rename + Move to… (submenu parent) + Delete = 3
+    expect(menuItems.length).toBe(3);
 
     const submenuParent = document.querySelector('.context-menu-item-submenu');
     expect(submenuParent.textContent).toContain('Move to…');
 
     const separators = document.querySelectorAll('.context-menu-separator');
     expect(separators.length).toBe(1);
+
+    // After hover: sub-items appear in body
+    submenuParent.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    const submenu = document.querySelector('.context-submenu');
+    expect(submenu).toBeTruthy();
+    const subItems = submenu.querySelectorAll('.context-menu-item');
+    expect(subItems.length).toBe(1);
+    expect(subItems[0].textContent).toBe('Work');
+  });
+
+  it('closeContextMenu removes active submenu from body', () => {
+    showContextMenu({
+      x: 0,
+      y: 0,
+      items: [
+        {
+          label: 'Parent',
+          children: [{ label: 'Child', action: () => {} }],
+        },
+      ],
+    });
+
+    // Hover to reveal submenu
+    const submenuItem = document.querySelector('.context-menu-item-submenu');
+    submenuItem.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+    expect(document.querySelector('.context-submenu')).toBeTruthy();
+
+    // Close everything
+    closeContextMenu();
+    expect(document.querySelector('.context-menu')).toBeFalsy();
+    expect(document.querySelector('.context-submenu')).toBeFalsy();
+  });
+
+  it('keeps submenu open when mouse moves from row to submenu', () => {
+    showContextMenu({
+      x: 0,
+      y: 0,
+      items: [
+        {
+          label: 'Parent',
+          children: [{ label: 'Child', action: () => {} }],
+        },
+      ],
+    });
+
+    const submenuItem = document.querySelector('.context-menu-item-submenu');
+    submenuItem.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+
+    const submenu = document.querySelector('.context-submenu');
+    expect(submenu).toBeTruthy();
+
+    // Mouse leaves row but enters the submenu — should stay open
+    const submenuChild = submenu.querySelector('.context-menu-item');
+    submenuItem.dispatchEvent(new MouseEvent('mouseleave', {
+      bubbles: true,
+      relatedTarget: submenuChild,
+    }));
+    // Submenu should still be in the DOM
+    expect(document.querySelector('.context-submenu')).toBeTruthy();
+    expect(submenu.classList.contains('context-submenu-visible')).toBe(true);
   });
 });

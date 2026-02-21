@@ -593,6 +593,10 @@ describe('WorkspaceService', () => {
       // Do NOT seed ws_local or arcSpacesRootId — simulating a brand new device
 
       await workspaceService.init();
+      // Reinstall detected — complete init (simulating user choosing "Restore")
+      if (workspaceService.needsReinstallPrompt) {
+        await workspaceService.continueInit();
+      }
 
       // Both workspaces should be loaded
       const all = workspaceService.getAll();
@@ -626,6 +630,10 @@ describe('WorkspaceService', () => {
       await storageService.saveWorkspaceMeta({ order: ['ws1'], version: 2 });
 
       await workspaceService.init();
+      // Reinstall detected — complete init (simulating user choosing "Restore")
+      if (workspaceService.needsReinstallPrompt) {
+        await workspaceService.continueInit();
+      }
 
       const ws = workspaceService.getActive();
       expect(ws).toBeTruthy();
@@ -968,6 +976,101 @@ describe('WorkspaceService', () => {
       const all = workspaceService.getAll();
       expect(all.length).toBe(2);
       expect(all.map(ws => ws.name)).toContain('New From Other Device');
+    });
+  });
+
+  // ── Reinstall Detection ─────────────────────────
+
+  describe('reinstall detection', () => {
+    it('sets needsReinstallPrompt when sync data exists but local is empty', async () => {
+      // Seed v2 data in sync but NO local state
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default'], version: 2 });
+      // Explicitly do NOT seed ws_local
+
+      await workspaceService.init();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+      // Workspaces should be loaded (for display in prompt)
+      expect(workspaceService.getAll().length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('does NOT set needsReinstallPrompt on normal init', async () => {
+      // Full seed including local state
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+
+      await seedV2Workspaces({
+        arcRootId: arcRoot.id,
+        workspaces: [{
+          id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+          colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [],
+          rootFolderId: folder.id, created: Date.now(),
+        }],
+      });
+
+      await workspaceService.init();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(false);
+    });
+
+    it('does NOT set needsReinstallPrompt on first-ever install (no sync data)', async () => {
+      // No sync data, no local data
+      await workspaceService.init();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(false);
+      // Should have run _firstRunSetup
+      expect(workspaceService.getAll().length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('continueInit completes initialization after restore choice', async () => {
+      // Seed sync data without local state
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default'], version: 2 });
+
+      await workspaceService.init();
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+
+      await workspaceService.continueInit();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(false);
+      const active = workspaceService.getActive();
+      expect(active).toBeTruthy();
+      expect(active.name).toBe('Personal');
+      expect(active.rootFolderId).toBeTruthy();
+    });
+
+    it('resetAndSetup clears sync and creates fresh workspace', async () => {
+      // Seed two workspaces in sync without local state
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceItem('ws_work', {
+        id: 'ws_work', name: 'Work', icon: 'folder', color: '#3B82F6',
+        colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [], created: 2000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default', 'ws_work'], version: 2 });
+
+      await workspaceService.init();
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+
+      await workspaceService.resetAndSetup();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(false);
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(1); // Fresh default workspace
+      expect(all[0].name).toBe('Personal');
+
+      // Old workspace items should be deleted from sync
+      const oldWork = await storageService.getWorkspaceItem('ws_work');
+      expect(oldWork).toBeNull();
     });
   });
 });

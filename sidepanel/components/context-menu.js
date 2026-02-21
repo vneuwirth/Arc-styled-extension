@@ -4,8 +4,22 @@
 import { el } from '../utils/dom.js';
 
 let activeMenu = null;
+let activeSubmenu = null;   // { element, row } — body-appended submenu
 let outsideClickHandler = null;
 let escapeHandler = null;
+
+/**
+ * Hide and remove the body-appended submenu (if any).
+ */
+function _hideActiveSubmenu() {
+  if (activeSubmenu) {
+    activeSubmenu.element.classList.remove('context-submenu-visible');
+    if (activeSubmenu.element.parentNode) {
+      activeSubmenu.element.remove();
+    }
+    activeSubmenu = null;
+  }
+}
 
 /**
  * Show a context menu at the given position.
@@ -39,7 +53,7 @@ export function showContextMenu({ x, y, items }) {
       </svg>`;
       row.appendChild(chevron);
 
-      // Build flyout submenu
+      // Build flyout submenu (NOT appended to row — will be appended to body on hover)
       const submenu = el('div', { className: 'context-submenu' });
       for (const child of item.children) {
         if (child.separator) {
@@ -61,32 +75,44 @@ export function showContextMenu({ x, y, items }) {
           }
         }));
       }
-      row.appendChild(submenu);
 
-      // Show/hide submenu on hover
+      // Show submenu on hover — append to body with fixed positioning
       row.addEventListener('mouseenter', () => {
+        _hideActiveSubmenu();
+
+        document.body.appendChild(submenu);
         submenu.classList.add('context-submenu-visible');
-        // Position to the right of the parent menu, aligned to this row
+        activeSubmenu = { element: submenu, row };
+
+        // Position using viewport coordinates
+        const rowRect = row.getBoundingClientRect();
         const menuRect = menu.getBoundingClientRect();
-        submenu.style.top = `${row.offsetTop}px`;
-        submenu.style.left = `${menuRect.width - 4}px`;
+
+        submenu.style.top = `${rowRect.top}px`;
+        submenu.style.left = `${menuRect.right - 4}px`;
 
         // Clamp: if off-screen right, fly out to the left
         requestAnimationFrame(() => {
           const subRect = submenu.getBoundingClientRect();
           if (subRect.right > window.innerWidth) {
-            submenu.style.left = `${-subRect.width + 4}px`;
+            submenu.style.left = `${menuRect.left - subRect.width + 4}px`;
           }
           if (subRect.bottom > window.innerHeight) {
-            submenu.style.top = `${row.offsetTop - (subRect.bottom - window.innerHeight) - 4}px`;
+            submenu.style.top = `${rowRect.top - (subRect.bottom - window.innerHeight) - 4}px`;
           }
         });
       });
 
       row.addEventListener('mouseleave', (e) => {
-        if (!row.contains(e.relatedTarget)) {
-          submenu.classList.remove('context-submenu-visible');
-        }
+        // If mouse moved to the submenu, keep it open
+        if (e.relatedTarget && submenu.contains(e.relatedTarget)) return;
+        _hideActiveSubmenu();
+      });
+
+      submenu.addEventListener('mouseleave', (e) => {
+        // If mouse moved back to the row, keep it open
+        if (e.relatedTarget && row.contains(e.relatedTarget)) return;
+        _hideActiveSubmenu();
       });
 
       menu.appendChild(row);
@@ -133,7 +159,8 @@ export function showContextMenu({ x, y, items }) {
   // Close on outside click (deferred to avoid catching the triggering right-click)
   requestAnimationFrame(() => {
     outsideClickHandler = (e) => {
-      if (activeMenu && !activeMenu.contains(e.target)) {
+      if (activeMenu && !activeMenu.contains(e.target) &&
+          !(activeSubmenu && activeSubmenu.element.contains(e.target))) {
         closeContextMenu();
       }
     };
@@ -152,6 +179,7 @@ export function showContextMenu({ x, y, items }) {
  * Close the active context menu if any.
  */
 export function closeContextMenu() {
+  _hideActiveSubmenu();
   if (activeMenu) {
     activeMenu.remove();
     activeMenu = null;

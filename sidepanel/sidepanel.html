@@ -19,6 +19,25 @@
       </div>
     </div>
 
+    <!-- Reinstall prompt (shown when sync data exists but local is empty) -->
+    <div id="reinstall-prompt" class="reinstall-prompt hidden">
+      <div class="reinstall-prompt-card">
+        <div class="reinstall-prompt-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15v-2h2v2h-2zm0-4V7h2v6h-2z" fill="currentColor" opacity="0.6"/>
+          </svg>
+        </div>
+        <div class="reinstall-prompt-title">Welcome back</div>
+        <div class="reinstall-prompt-text">
+          Previous workspace data was found. Would you like to restore your workspaces or start fresh?
+        </div>
+        <div class="reinstall-prompt-actions">
+          <button id="reinstall-restore" class="btn btn-primary btn-sm">Restore</button>
+          <button id="reinstall-fresh" class="btn btn-ghost btn-sm">Start Fresh</button>
+        </div>
+      </div>
+    </div>
+
     <div id="app-body">
       <!-- Left: narrow vertical space bar with workspace icons -->
       <div id="space-bar"></div>
