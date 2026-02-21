@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Arc Spaces",
   "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4cXFgweutYlk0L3MYOB2zcR7LaiZQGyqyrilzOZ6mCHl9YePqXYiqer3gHcRif17ywmS/w7aw8Ypa4UN4TVq7M5ed/pizSwFl7ANhxGj7Ge5CCnjHHL9Gi+Qk+2KtuGhMvv5uDyGhLtlqz1OAUei6hXlF7y2TNRuAv+FQVKrIi7ZDrB48VdyxhiaGzm1xXF0N4WcQaPj1HHm1+UNPoDD50B7SiUivnWVYxFzG8xoVu2ewoD5h5OBGulfsNnVLKlF4FrnjUcCEJcAu0hmI416g2R6JtCh1o6E2ed4nEPYC/QaVkYKHK4cLvbScTK8q3XAEayjTr4q5+rOdABSlGUjRQIDAQAB",
   "description": "Arc-style sidebar with workspaces, pinned bookmarks, and folder organization",
   "permissions": [
     "sidePanel",
