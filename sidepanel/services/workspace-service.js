@@ -398,10 +398,9 @@ class WorkspaceService {
 
     if (!rootId) {
       // Check if "Arc Spaces" folder already exists (from a previous install)
-      const existing = await bookmarkService.search('Arc Spaces');
-      const found = existing.find(b => !b.url && b.title === 'Arc Spaces');
-      if (found) {
-        rootId = found.id;
+      const bestRootId = await this._findBestArcSpacesRoot();
+      if (bestRootId) {
+        rootId = bestRootId;
       } else {
         // Dynamically find "Other Bookmarks" instead of hardcoding id '2'
         const otherBookmarksId = await this._getOtherBookmarksId();
@@ -534,10 +533,46 @@ class WorkspaceService {
   }
 
   /**
+   * Find the best "Arc Spaces" root folder among potentially multiple matches.
+   * Prefers the one with the most subfolder children (most likely to have user data).
+   * When multiple candidates tie, prefers one whose children match synced workspace names.
+   * @returns {Promise<string|null>} The bookmark ID of the best root, or null if none found.
+   */
+  async _findBestArcSpacesRoot() {
+    const existing = await bookmarkService.search('Arc Spaces');
+    const candidates = existing.filter(b => !b.url && b.title === 'Arc Spaces');
+
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0].id;
+
+    // Multiple "Arc Spaces" folders — pick the one with the most folder children
+    const wsNames = new Set(this._order.map(id => this._items[id]?.name).filter(Boolean));
+    let bestId = candidates[0].id;
+    let bestScore = -1;
+
+    for (const candidate of candidates) {
+      const children = await bookmarkService.getChildren(candidate.id);
+      const folderChildren = children.filter(c => !c.url);
+      // Primary score: number of folder children
+      let score = folderChildren.length * 1000;
+      // Tiebreaker: how many folder names match synced workspace names
+      score += folderChildren.filter(c => wsNames.has(c.title)).length;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestId = candidate.id;
+      }
+    }
+
+    return bestId;
+  }
+
+  /**
    * Reconcile synced workspace configs with local bookmark folders.
    * Workspace configs sync via chrome.storage.sync, but rootFolderId values
    * are LOCAL bookmark IDs that don't exist on other devices.
-   * This method matches folders by name and creates missing ones.
+   * Uses two-pass matching: first by name, then positional fallback for
+   * renamed workspaces. Only creates new folders as a last resort.
    */
   async _reconcileFolders() {
     if (!this._order || this._order.length === 0) return;
@@ -547,10 +582,9 @@ class WorkspaceService {
     // We must find or create the root folder before we can reconcile workspace folders.
     if (!this._arcSpacesRootId) {
       // New device: find existing "Arc Spaces" folder or create one
-      const existing = await bookmarkService.search('Arc Spaces');
-      const found = existing.find(b => !b.url && b.title === 'Arc Spaces');
-      if (found) {
-        this._arcSpacesRootId = found.id;
+      const bestRootId = await this._findBestArcSpacesRoot();
+      if (bestRootId) {
+        this._arcSpacesRootId = bestRootId;
       } else {
         const otherBookmarksId = await this._getOtherBookmarksId();
         const folder = await bookmarkService.create({
@@ -565,10 +599,9 @@ class WorkspaceService {
       const rootFolder = await bookmarkService.get(this._arcSpacesRootId);
       if (!rootFolder) {
         // Root folder was deleted — find or re-create it
-        const existing = await bookmarkService.search('Arc Spaces');
-        const found = existing.find(b => !b.url && b.title === 'Arc Spaces');
-        if (found) {
-          this._arcSpacesRootId = found.id;
+        const bestRootId = await this._findBestArcSpacesRoot();
+        if (bestRootId) {
+          this._arcSpacesRootId = bestRootId;
         } else {
           const otherBookmarksId = await this._getOtherBookmarksId();
           const folder = await bookmarkService.create({
@@ -582,36 +615,72 @@ class WorkspaceService {
     }
 
     const localChildren = await bookmarkService.getChildren(this._arcSpacesRootId);
+    const localFolders = localChildren.filter(c => !c.url);
     let changed = false;
 
     if (!this._localState) {
       this._localState = { activeWorkspaceId: this._order[0], rootFolderIds: {} };
     }
 
+    // Track which local folders have been claimed and which workspaces need a folder
+    const claimedFolderIds = new Set();
+    const unmatchedWorkspaceIds = [];
+
+    // ── Pass 1: Match by name ──────────────────────────
     for (const id of this._order) {
       const ws = this._items[id];
       if (!ws) continue;
 
-      // Check if current rootFolderId exists locally
+      // Check if current rootFolderId is still valid
       if (ws.rootFolderId) {
         const existing = await bookmarkService.get(ws.rootFolderId);
-        if (existing) continue; // Folder exists, no reconciliation needed
+        if (existing) {
+          claimedFolderIds.add(ws.rootFolderId);
+          continue; // Folder exists, no reconciliation needed
+        }
       }
 
-      // Try to find a matching local folder by name
-      const match = localChildren.find(c => !c.url && c.title === ws.name);
+      // Try to find a matching local folder by name (skip already-claimed folders)
+      const match = localFolders.find(c => !claimedFolderIds.has(c.id) && c.title === ws.name);
       if (match) {
         ws.rootFolderId = match.id;
         this._localState.rootFolderIds[id] = match.id;
+        claimedFolderIds.add(match.id);
         changed = true;
       } else {
-        // Create the folder locally
+        unmatchedWorkspaceIds.push(id);
+      }
+    }
+
+    // ── Pass 2: Match remaining workspaces to remaining folders by position ──
+    const unclaimedFolders = localFolders.filter(c => !claimedFolderIds.has(c.id));
+
+    for (let i = 0; i < unmatchedWorkspaceIds.length; i++) {
+      const wsId = unmatchedWorkspaceIds[i];
+      const ws = this._items[wsId];
+      if (!ws) continue;
+
+      if (i < unclaimedFolders.length) {
+        // Use an unclaimed existing folder (positional fallback).
+        // This handles renamed workspaces: the folder still exists
+        // under the old name but the sync data has the new name.
+        const folder = unclaimedFolders[i];
+        ws.rootFolderId = folder.id;
+        this._localState.rootFolderIds[wsId] = folder.id;
+        claimedFolderIds.add(folder.id);
+        changed = true;
+        // Rename the bookmark folder to match the synced workspace name
+        try {
+          await bookmarkService.update(folder.id, { title: ws.name });
+        } catch { /* folder rename is best-effort */ }
+      } else {
+        // No unclaimed folders left — create a new one
         const newFolder = await bookmarkService.create({
           parentId: this._arcSpacesRootId,
           title: ws.name
         });
         ws.rootFolderId = newFolder.id;
-        this._localState.rootFolderIds[id] = newFolder.id;
+        this._localState.rootFolderIds[wsId] = newFolder.id;
         changed = true;
       }
     }

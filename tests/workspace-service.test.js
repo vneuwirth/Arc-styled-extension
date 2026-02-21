@@ -1072,5 +1072,151 @@ describe('WorkspaceService', () => {
       const oldWork = await storageService.getWorkspaceItem('ws_work');
       expect(oldWork).toBeNull();
     });
+
+    it('restore picks Arc Spaces root with most children when duplicates exist', async () => {
+      // Empty "Arc Spaces" folder (from a botched previous install)
+      await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+
+      // Real "Arc Spaces" folder with workspace subfolders and bookmarks
+      const realRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const personalFolder = await bookmarkService.create({ parentId: realRoot.id, title: 'Personal' });
+      await bookmarkService.create({ parentId: personalFolder.id, title: 'Google', url: 'https://google.com' });
+      const workFolder = await bookmarkService.create({ parentId: realRoot.id, title: 'Work' });
+      await bookmarkService.create({ parentId: workFolder.id, title: 'GitHub', url: 'https://github.com' });
+
+      // Seed sync data without local state (reinstall scenario)
+      await storageService.saveWorkspaceItem('ws1', {
+        id: 'ws1', name: 'Personal', icon: 'folder', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceItem('ws2', {
+        id: 'ws2', name: 'Work', icon: 'folder', color: '#3B82F6',
+        colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [], created: 2000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws1', 'ws2'], version: 2 });
+
+      await workspaceService.init();
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+      await workspaceService.continueInit();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(2);
+
+      // Should have picked the real root (with children), not the empty one
+      const personal = workspaceService.getById('ws1');
+      expect(personal.rootFolderId).toBe(personalFolder.id);
+      const work = workspaceService.getById('ws2');
+      expect(work.rootFolderId).toBe(workFolder.id);
+    });
+
+    it('restore matches renamed workspaces by position when name match fails', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'OldPersonal' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'OldWork' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+
+      // Sync data has RENAMED workspace names
+      await storageService.saveWorkspaceItem('ws1', {
+        id: 'ws1', name: 'Personal', icon: 'folder', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceItem('ws2', {
+        id: 'ws2', name: 'Work', icon: 'folder', color: '#3B82F6',
+        colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [], created: 2000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws1', 'ws2'], version: 2 });
+
+      await workspaceService.init();
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+      await workspaceService.continueInit();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(2);
+
+      // Should reuse existing folders (not create new empty ones)
+      const personal = workspaceService.getById('ws1');
+      expect(personal.rootFolderId).toBe(folder1.id);
+      const work = workspaceService.getById('ws2');
+      expect(work.rootFolderId).toBe(folder2.id);
+
+      // Folders should be renamed to match sync names
+      const renamedFolder1 = await bookmarkService.get(folder1.id);
+      expect(renamedFolder1.title).toBe('Personal');
+      const renamedFolder2 = await bookmarkService.get(folder2.id);
+      expect(renamedFolder2.title).toBe('Work');
+    });
+
+    it('restore uses name match first, then positional match for remainder', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const personalFolder = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      await bookmarkService.create({ parentId: personalFolder.id, title: 'Google', url: 'https://google.com' });
+      const oldWorkFolder = await bookmarkService.create({ parentId: arcRoot.id, title: 'OldWorkName' });
+      await bookmarkService.create({ parentId: oldWorkFolder.id, title: 'GitHub', url: 'https://github.com' });
+
+      await storageService.saveWorkspaceItem('ws1', {
+        id: 'ws1', name: 'Personal', icon: 'folder', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceItem('ws2', {
+        id: 'ws2', name: 'Work', icon: 'folder', color: '#3B82F6',
+        colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [], created: 2000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws1', 'ws2'], version: 2 });
+
+      await workspaceService.init();
+      await workspaceService.continueInit();
+
+      // "Personal" should be name-matched
+      const personal = workspaceService.getById('ws1');
+      expect(personal.rootFolderId).toBe(personalFolder.id);
+
+      // "Work" should be positionally matched to the remaining folder "OldWorkName"
+      const work = workspaceService.getById('ws2');
+      expect(work.rootFolderId).toBe(oldWorkFolder.id);
+    });
+
+    it('restore does not create new empty folders when existing ones have bookmarks', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+
+      await storageService.saveWorkspaceItem('ws1', {
+        id: 'ws1', name: 'Personal', icon: 'folder', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws1'], version: 2 });
+
+      await workspaceService.init();
+      await workspaceService.continueInit();
+
+      // Should have exactly 1 folder under Arc Spaces (not 2)
+      const children = await bookmarkService.getChildren(arcRoot.id);
+      const folders = children.filter(c => !c.url);
+      expect(folders.length).toBe(1);
+      expect(folders[0].id).toBe(folder1.id);
+    });
+
+    it('restore preserves pinned bookmarks after folder remapping', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const personalFolder = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const bm = await bookmarkService.create({ parentId: personalFolder.id, title: 'Google', url: 'https://google.com' });
+
+      await storageService.saveWorkspaceItem('ws1', {
+        id: 'ws1', name: 'Personal', icon: 'folder', color: '#7C5CFC',
+        colorScheme: 'purple', shortcuts: [], created: 1000,
+        pinnedBookmarks: [{ id: '9999', url: 'https://google.com', title: 'Google' }],
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws1'], version: 2 });
+
+      await workspaceService.init();
+      await workspaceService.continueInit();
+
+      const ws = workspaceService.getActive();
+      expect(ws.rootFolderId).toBe(personalFolder.id);
+      // Pinned bookmark should be reconciled to the local bookmark's actual ID
+      expect(ws.pinnedBookmarkIds).toEqual([bm.id]);
+      expect(ws.pinnedBookmarks[0].url).toBe('https://google.com');
+    });
   });
 });
