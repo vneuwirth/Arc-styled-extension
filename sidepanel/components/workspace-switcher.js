@@ -268,10 +268,15 @@ export class WorkspaceSwitcher {
         click: async () => {
           const name = input.value.trim();
           if (!name) return;
-          const newWs = await workspaceService.create(name, selectedColor);
-          // Auto-switch to the newly created workspace
-          await workspaceService.switchTo(newWs.id);
-          themeService.apply(newWs.colorScheme);
+          try {
+            const newWs = await workspaceService.create(name, selectedColor);
+            if (newWs) {
+              await workspaceService.switchTo(newWs.id);
+              themeService.apply(newWs.colorScheme);
+            }
+          } catch (err) {
+            console.error('Arc Spaces: failed to create workspace:', err);
+          }
           this._closePopover();
         }
       }

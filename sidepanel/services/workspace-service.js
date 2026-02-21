@@ -517,6 +517,14 @@ class WorkspaceService {
     const colorInfo = WORKSPACE_COLORS.find(c => c.name === colorScheme) || WORKSPACE_COLORS[1];
     const id = 'ws_' + Date.now().toString(36);
 
+    // Ensure Arc Spaces root folder exists before creating a workspace folder
+    if (!this._arcSpacesRootId) {
+      await this._reconcileFolders();
+    }
+    if (!this._arcSpacesRootId) {
+      throw new Error('Cannot create workspace: Arc Spaces root folder not found');
+    }
+
     const folder = await bookmarkService.create({
       parentId: this._arcSpacesRootId,
       title: name
