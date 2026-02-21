@@ -284,6 +284,24 @@ class StorageService {
   }
 
   /**
+   * Discover all workspace item keys in sync storage.
+   * Scans every key, returns IDs of valid workspace data objects.
+   * Used to find orphaned workspaces not referenced by ws_meta.
+   * @returns {Promise<string[]>}
+   */
+  async discoverAllWorkspaceKeys() {
+    const allData = await this.getSync(null);
+    return Object.keys(allData).filter(
+      key => key.startsWith('ws_')
+        && key !== 'ws_meta'
+        && key !== 'ws_local'
+        && typeof allData[key] === 'object'
+        && allData[key] !== null
+        && allData[key].id
+    );
+  }
+
+  /**
    * Get device-local workspace state (activeWorkspaceId, rootFolderIds).
    * @returns {Promise<{activeWorkspaceId: string|null, rootFolderIds: Object}>}
    */

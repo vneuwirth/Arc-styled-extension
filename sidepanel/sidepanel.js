@@ -78,7 +78,10 @@ class App {
             key => key === 'ws_meta' || (key.startsWith('ws_') && key !== 'ws_local')
           );
           if (hasWsChange) {
-            this._handleRemoteSync();
+            const changedKeys = Object.keys(changes).filter(
+              key => key.startsWith('ws_') && key !== 'ws_local'
+            );
+            this._handleRemoteSync(changedKeys);
           }
           if (changes.settings) {
             // Another device updated settings — apply locally
@@ -173,11 +176,13 @@ class App {
     }
   }
 
-  async _handleRemoteSync() {
+  async _handleRemoteSync(changedKeys = []) {
     if (this._syncing) return; // Prevent re-entrant sync loops
     this._syncing = true;
     try {
+      console.log('Arc Spaces: remote sync detected, changed keys:', changedKeys);
       // Re-initialize workspace service with new data
+      // _loadV2 now includes orphan recovery, so new workspaces are automatically picked up
       await workspaceService.init();
       const ws = workspaceService.getActive();
       if (ws) themeService.apply(ws.colorScheme);

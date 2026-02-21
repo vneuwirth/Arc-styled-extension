@@ -859,4 +859,115 @@ describe('WorkspaceService', () => {
       expect(newWs.shortcuts).toEqual([]);
     });
   });
+
+  // ── Multi-Workspace Cross-Device Sync ──────────────
+
+  describe('multi-workspace cross-device sync', () => {
+    it('discovers orphaned ws_* keys when ws_meta is missing', async () => {
+      // Simulate: Device A wrote workspace data to sync, but ws_meta
+      // was lost (or hasn't arrived). Only ws_* keys exist, no ws_meta.
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceItem('ws_12345', {
+        id: 'ws_12345', name: 'Work', icon: 'folder', color: '#3B82F6',
+        colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [], created: 2000,
+      });
+      // Do NOT write ws_meta — simulating it was lost or never arrived
+
+      await workspaceService.init();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(2);
+      expect(all.map(ws => ws.name).sort()).toEqual(['Personal', 'Work']);
+
+      // ws_meta should now be reconstructed
+      const meta = await storageService.getWorkspaceMeta();
+      expect(meta.order).toContain('ws_default');
+      expect(meta.order).toContain('ws_12345');
+    });
+
+    it('recovers workspaces present in sync but missing from ws_meta.order', async () => {
+      // Simulate: ws_meta only has ['ws_default'], but ws_12345 data exists in sync
+      // (ws_meta was overwritten by another device's _firstRunSetup)
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceItem('ws_12345', {
+        id: 'ws_12345', name: 'Work', icon: 'folder', color: '#3B82F6',
+        colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [], created: 2000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default'], version: 2 });
+
+      await workspaceService.init();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(2);
+      expect(all.map(ws => ws.name).sort()).toEqual(['Personal', 'Work']);
+
+      // ws_meta should be updated to include the recovered workspace
+      const meta = await storageService.getWorkspaceMeta();
+      expect(meta.order).toContain('ws_default');
+      expect(meta.order).toContain('ws_12345');
+    });
+
+    it('_saveMeta merges with remote to avoid dropping workspaces', async () => {
+      // Setup: Device has ws_default loaded
+      await workspaceService.init();
+
+      // Simulate: another device added ws_remote to sync while we were running
+      await storageService.saveWorkspaceItem('ws_remote', {
+        id: 'ws_remote', name: 'Remote Work', icon: 'folder', color: '#22C55E',
+        colorScheme: 'green', pinnedBookmarks: [], shortcuts: [], created: 3000,
+      });
+      // Externally update ws_meta to include both (as if Device A wrote it)
+      await storageService.saveWorkspaceMeta({
+        order: ['ws_default', 'ws_remote'], version: 2,
+      });
+
+      // Now create a workspace on this device — triggers _saveMeta with merge
+      await workspaceService.create('Local New', 'blue');
+
+      // ws_meta should contain all three: ws_default, ws_remote, and the new one
+      const meta = await storageService.getWorkspaceMeta();
+      expect(meta.order).toContain('ws_default');
+      expect(meta.order).toContain('ws_remote');
+      expect(meta.order.length).toBe(3);
+    });
+
+    it('delete still removes workspace despite merge safeguard', async () => {
+      await workspaceService.init();
+      const ws2 = await workspaceService.create('ToDelete', 'red');
+
+      await workspaceService.delete(ws2.id);
+
+      const meta = await storageService.getWorkspaceMeta();
+      expect(meta.order).not.toContain(ws2.id);
+      expect(workspaceService.getById(ws2.id)).toBeNull();
+    });
+
+    it('re-init after sync change picks up new workspaces', async () => {
+      // Initial setup on this device
+      await workspaceService.init();
+      expect(workspaceService.getAll().length).toBe(1);
+
+      // Simulate: another device added a workspace to sync
+      await storageService.saveWorkspaceItem('ws_new', {
+        id: 'ws_new', name: 'New From Other Device', icon: 'folder', color: '#3B82F6',
+        colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [], created: 5000,
+      });
+      await storageService.saveWorkspaceMeta({
+        order: ['ws_default', 'ws_new'], version: 2,
+      });
+
+      // Re-init (simulating what _handleRemoteSync does)
+      await workspaceService.init();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(2);
+      expect(all.map(ws => ws.name)).toContain('New From Other Device');
+    });
+  });
 });

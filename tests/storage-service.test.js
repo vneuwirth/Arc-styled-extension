@@ -319,6 +319,26 @@ describe('StorageService', () => {
     });
   });
 
+  // ── discoverAllWorkspaceKeys ───────────────────
+
+  describe('discoverAllWorkspaceKeys', () => {
+    it('returns workspace item keys from sync', async () => {
+      await storageService.saveWorkspaceItem('ws_default', { id: 'ws_default', name: 'Personal' });
+      await storageService.saveWorkspaceItem('ws_work', { id: 'ws_work', name: 'Work' });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default'], version: 2 });
+
+      const keys = await storageService.discoverAllWorkspaceKeys();
+      expect(keys).toContain('ws_default');
+      expect(keys).toContain('ws_work');
+      expect(keys).not.toContain('ws_meta');
+    });
+
+    it('returns empty array when no workspace keys exist', async () => {
+      const keys = await storageService.discoverAllWorkspaceKeys();
+      expect(keys).toEqual([]);
+    });
+  });
+
   // ── onChange ────────────────────────────────────
 
   describe('onChange', () => {

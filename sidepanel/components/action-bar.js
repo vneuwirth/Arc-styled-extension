@@ -98,10 +98,7 @@ export class ActionBar {
       action: () => this._startRename(ws)
     });
 
-    // Change Color — submenu-style with color swatches
-    for (const c of workspaceService.colors) {
-      // We'll add all colors as a submenu via a single "Change color…" item
-    }
+    // Change color submenu
     items.push({
       label: 'Change color…',
       action: () => this._showColorMenu(ws, rect)

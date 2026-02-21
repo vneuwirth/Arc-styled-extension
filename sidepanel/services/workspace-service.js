@@ -62,10 +62,39 @@ class WorkspaceService {
   }
 
   /**
-   * Save workspace metadata (order + version) to sync.
+   * Merge two workspace order arrays, preserving all unique IDs.
+   * Keeps the order of `primary` and appends any IDs from `secondary`
+   * that aren't already present.
+   * @param {string[]} primary
+   * @param {string[]} secondary
+   * @returns {string[]}
    */
-  async _saveMeta() {
-    await storageService.saveWorkspaceMeta({ order: this._order, version: 2 });
+  _mergeOrders(primary, secondary) {
+    const seen = new Set(primary);
+    const merged = [...primary];
+    for (const id of secondary) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        merged.push(id);
+      }
+    }
+    return merged;
+  }
+
+  /**
+   * Save workspace metadata (order + version) to sync.
+   * By default, merges with remote ws_meta to avoid dropping workspaces
+   * that another device added (Chrome sync is last-write-wins).
+   * Pass { skipMerge: true } when intentionally removing workspaces (delete, validate).
+   */
+  async _saveMeta({ skipMerge = false } = {}) {
+    if (!skipMerge) {
+      const remote = await storageService.getWorkspaceMeta();
+      if (remote && remote.order) {
+        this._order = this._mergeOrders(this._order, remote.order);
+      }
+    }
+    await storageService.saveWorkspaceMeta({ order: [...this._order], version: 2 });
   }
 
   /**
@@ -153,10 +182,24 @@ class WorkspaceService {
 
   /**
    * Load v2 split-key format.
+   * Also discovers orphaned ws_* keys not in meta.order (e.g. after another
+   * device's _firstRunSetup overwrote ws_meta) and recovers them.
    */
   async _loadV2(meta) {
     this._order = meta.order || [];
     this._items = await storageService.getAllWorkspaceItems(this._order);
+
+    // Discover orphaned workspace keys not referenced by ws_meta
+    const allKeys = await storageService.discoverAllWorkspaceKeys();
+    const orphaned = allKeys.filter(k => !this._order.includes(k));
+    if (orphaned.length > 0) {
+      console.log('Arc Spaces: recovering orphaned workspaces:', orphaned);
+      const orphanItems = await storageService.getAllWorkspaceItems(orphaned);
+      Object.assign(this._items, orphanItems);
+      this._order = this._mergeOrders(this._order, Object.keys(orphanItems));
+      // Persist the recovered ws_meta so future loads include these workspaces
+      await this._saveMeta();
+    }
   }
 
   /**
@@ -266,6 +309,21 @@ class WorkspaceService {
       return;
     }
 
+    // Orphan recovery: even without ws_meta, individual ws_* keys may exist
+    // (e.g. ws_meta was lost but workspace data survived in sync).
+    const orphanedKeys = await storageService.discoverAllWorkspaceKeys();
+    if (orphanedKeys.length > 0) {
+      console.log('Arc Spaces init: discovered orphaned workspace keys:', orphanedKeys);
+      // Put ws_default first if present, then the rest
+      const recoveredOrder = orphanedKeys.includes('ws_default')
+        ? ['ws_default', ...orphanedKeys.filter(k => k !== 'ws_default')]
+        : orphanedKeys;
+      const recoveredMeta = { order: recoveredOrder, version: 2 };
+      await storageService.saveWorkspaceMeta(recoveredMeta);
+      await this._loadV2(recoveredMeta);
+      return;
+    }
+
     // arcSpacesRootId from local storage
     let rootId = await storageService.getArcSpacesRootIdLocal();
 
@@ -324,6 +382,12 @@ class WorkspaceService {
 
     // Save to sync as split keys (clone to avoid reference issues)
     await storageService.saveWorkspaceItem(wsId, this._syncableItem(this._items[wsId]));
+    // Safety merge: re-read ws_meta in case another device wrote it between
+    // our last check and now, so we never drop workspaces.
+    const raceMeta = await storageService.getWorkspaceMeta();
+    if (raceMeta && raceMeta.version === 2) {
+      this._order = this._mergeOrders(raceMeta.order, this._order);
+    }
     await storageService.saveWorkspaceMeta({ order: [...this._order], version: 2 });
 
     // Save local state
@@ -389,8 +453,8 @@ class WorkspaceService {
         if (!this._items[this._localState.activeWorkspaceId]) {
           this._localState.activeWorkspaceId = this._order[0];
         }
-        // Save updated meta + local
-        await this._saveMeta();
+        // Save updated meta + local (skipMerge: intentionally removing stale workspaces)
+        await this._saveMeta({ skipMerge: true });
         await this._saveLocal();
         // Delete removed workspace items from sync
         for (const id of deletedIds) {
@@ -588,8 +652,9 @@ class WorkspaceService {
       this._localState.activeWorkspaceId = this._order[0];
     }
     // Delete item from sync, save updated meta + local
+    // skipMerge: intentionally removing this workspace — don't re-add from remote
     await storageService.deleteWorkspaceItem(workspaceId);
-    await this._saveMeta();
+    await this._saveMeta({ skipMerge: true });
     await this._saveLocal();
     bus.emit(Events.WORKSPACE_DELETED, { id: workspaceId });
     bus.emit(Events.WORKSPACE_CHANGED, this.getActive());
