@@ -147,6 +147,8 @@ const chromeBookmarks = {
     } else {
       newParent.children.push(node);
     }
+    // Update index on all children so get() returns correct indices
+    newParent.children.forEach((child, i) => { child.index = i; });
     return cloneNode(node);
   }),
 

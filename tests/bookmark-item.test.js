@@ -193,6 +193,110 @@ describe('createBookmarkItem', () => {
     expect(item.classList.contains('drag-over')).toBe(false);
   });
 
+  // ── Drop Between (Zone Detection) ─────────────
+
+  it('sets up drop target on bookmarks when onDropBetween is provided', () => {
+    const onDropBetween = vi.fn();
+    const item = createBookmarkItem(bookmarkNode, { depth: 0, onDropBetween });
+    document.body.appendChild(item);
+
+    const dragoverEvt = new Event('dragover', { bubbles: true, cancelable: true });
+    Object.defineProperty(dragoverEvt, 'dataTransfer', {
+      value: { dropEffect: '', effectAllowed: '' },
+    });
+    item.dispatchEvent(dragoverEvt);
+
+    // Should have one of the drop zone classes (not drag-over since it's a bookmark)
+    const hasDropClass = item.classList.contains('drop-before') || item.classList.contains('drop-after');
+    expect(hasDropClass).toBe(true);
+  });
+
+  it('calls onDropBetween with "before" on drop at drop-before zone', () => {
+    const onDropBetween = vi.fn();
+    const item = createBookmarkItem(bookmarkNode, { depth: 0, onDropBetween });
+    document.body.appendChild(item);
+
+    // Set drop-before class manually (simulating zone detection)
+    item.classList.add('drop-before');
+
+    const dropEvt = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvt, 'dataTransfer', {
+      value: { getData: () => '99' },
+    });
+    item.dispatchEvent(dropEvt);
+
+    expect(onDropBetween).toHaveBeenCalledWith('99', '42', 'before');
+  });
+
+  it('calls onDropBetween with "after" on drop at drop-after zone', () => {
+    const onDropBetween = vi.fn();
+    const item = createBookmarkItem(bookmarkNode, { depth: 0, onDropBetween });
+    document.body.appendChild(item);
+
+    item.classList.add('drop-after');
+
+    const dropEvt = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvt, 'dataTransfer', {
+      value: { getData: () => '99' },
+    });
+    item.dispatchEvent(dropEvt);
+
+    expect(onDropBetween).toHaveBeenCalledWith('99', '42', 'after');
+  });
+
+  it('calls onDrop (not onDropBetween) when dropping in folder middle zone', () => {
+    const onDrop = vi.fn();
+    const onDropBetween = vi.fn();
+    const item = createBookmarkItem(folderNode, { depth: 0, onDrop, onDropBetween });
+    document.body.appendChild(item);
+
+    // Simulate the drag-over class being set (middle zone of folder)
+    item.classList.add('drag-over');
+
+    const dropEvt = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvt, 'dataTransfer', {
+      value: { getData: () => '99' },
+    });
+    item.dispatchEvent(dropEvt);
+
+    expect(onDrop).toHaveBeenCalledWith('99', '50');
+    expect(onDropBetween).not.toHaveBeenCalled();
+  });
+
+  it('does not call any drop handler when dragging onto self', () => {
+    const onDrop = vi.fn();
+    const onDropBetween = vi.fn();
+    const item = createBookmarkItem(bookmarkNode, { depth: 0, onDrop, onDropBetween });
+    document.body.appendChild(item);
+
+    item.classList.add('drop-before');
+
+    const dropEvt = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(dropEvt, 'dataTransfer', {
+      value: { getData: () => '42' }, // Same as bookmarkNode.id
+    });
+    item.dispatchEvent(dropEvt);
+
+    expect(onDrop).not.toHaveBeenCalled();
+    expect(onDropBetween).not.toHaveBeenCalled();
+  });
+
+  it('cleans up all drop classes on dragleave', () => {
+    const onDropBetween = vi.fn();
+    const item = createBookmarkItem(bookmarkNode, { depth: 0, onDropBetween });
+    document.body.appendChild(item);
+
+    item.classList.add('drag-over', 'drop-before', 'drop-after');
+
+    // relatedTarget null means leaving the element entirely
+    const leaveEvt = new MouseEvent('dragleave', { bubbles: true, relatedTarget: null });
+    item.dispatchEvent(leaveEvt);
+
+    expect(item.classList.contains('drag-over')).toBe(false);
+    expect(item.classList.contains('drop-before')).toBe(false);
+    expect(item.classList.contains('drop-after')).toBe(false);
+  });
+
   // ── Edge Cases ──────────────────────────────────
 
   it('handles bookmark with no title (uses hostname)', () => {

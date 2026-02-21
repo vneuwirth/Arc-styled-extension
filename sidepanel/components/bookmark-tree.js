@@ -149,6 +149,7 @@ export class BookmarkTree {
         onToggle: (id) => this._toggleFolder(id),
         onClick: (bm) => this._openBookmark(bm),
         onDrop: (draggedId, targetId) => this._moveBookmark(draggedId, targetId),
+        onDropBetween: (draggedId, refId, pos) => this._moveBookmarkBetween(draggedId, refId, pos),
         onAddSubfolder: (parentId) => this._showSubfolderInput(parentId),
         onContextMenu: (n, pos) => this._showContextMenu(n, pos)
       });
@@ -234,6 +235,94 @@ export class BookmarkTree {
       await this.refresh();
     } catch (err) {
       console.warn('Arc Spaces: move to root failed:', err);
+    }
+  }
+
+  /**
+   * Move a folder (and all its contents) to another workspace's root folder.
+   * Unpins any pinned descendants before moving.
+   * @param {string} folderId - The folder to move
+   * @param {Object} targetWorkspace - The target workspace object
+   */
+  async _moveToWorkspace(folderId, targetWorkspace) {
+    try {
+      if (!targetWorkspace.rootFolderId) {
+        console.warn('Arc Spaces: target workspace has no root folder');
+        return;
+      }
+
+      // Guard: don't move a folder into its own subtree
+      if (await this._isDescendant(folderId, targetWorkspace.rootFolderId)) {
+        return;
+      }
+
+      // Unpin this folder and any descendants from the current workspace
+      const subtree = await bookmarkService.getSubTree(folderId);
+      if (subtree && subtree.length > 0) {
+        const walk = async (n) => {
+          if (workspaceService.isPinned(n.id)) {
+            await workspaceService.unpinBookmark(n.id);
+          }
+          if (n.children) {
+            for (const child of n.children) {
+              await walk(child);
+            }
+          }
+        };
+        await walk(subtree[0]);
+      }
+
+      await bookmarkService.move(folderId, { parentId: targetWorkspace.rootFolderId });
+      await this.refresh();
+    } catch (err) {
+      console.warn('Arc Spaces: move to workspace failed:', err);
+    }
+  }
+
+  /**
+   * Move a bookmark to a position before or after a reference item.
+   * Uses the index parameter to control ordering within a folder.
+   * @param {string} draggedId - ID of the dragged item
+   * @param {string} referenceId - ID of the reference item
+   * @param {'before'|'after'} position - Insert before or after the reference
+   */
+  async _moveBookmarkBetween(draggedId, referenceId, position) {
+    try {
+      const refNode = await bookmarkService.get(referenceId);
+      if (!refNode) return;
+
+      const draggedNode = await bookmarkService.get(draggedId);
+      if (!draggedNode) return;
+
+      // Guard: don't move a folder into its own subtree
+      if (await this._isDescendant(draggedId, refNode.parentId)) {
+        return;
+      }
+
+      let targetIndex = refNode.index;
+      if (position === 'after') {
+        targetIndex = refNode.index + 1;
+      }
+
+      // Chrome API quirk: when moving within the same parent, the item is
+      // removed first then inserted. If the dragged item was before the
+      // target index, subtract 1 to compensate for the removal.
+      const sameParent = draggedNode.parentId === refNode.parentId;
+      if (sameParent && draggedNode.index < targetIndex) {
+        targetIndex -= 1;
+      }
+
+      // Skip no-op moves (same position)
+      if (sameParent && draggedNode.index === targetIndex) return;
+
+      await bookmarkService.move(draggedId, {
+        parentId: refNode.parentId,
+        index: targetIndex
+      });
+
+      await this.refresh();
+    } catch (err) {
+      console.warn('Arc Spaces: move bookmark between failed:', err);
     }
   }
 
@@ -378,6 +467,23 @@ export class BookmarkTree {
         label: 'Open in new tab',
         action: () => chrome.tabs.create({ url: node.url })
       });
+    }
+
+    // Move to workspace (folders only, when multiple workspaces exist)
+    if (isFolder) {
+      const allWorkspaces = workspaceService.getAll();
+      const activeWs = workspaceService.getActive();
+      const otherWorkspaces = allWorkspaces.filter(ws => ws.id !== activeWs.id);
+
+      if (otherWorkspaces.length > 0) {
+        items.push({
+          label: 'Move to workspace…',
+          children: otherWorkspaces.map(ws => ({
+            label: ws.name,
+            action: () => this._moveToWorkspace(node.id, ws)
+          }))
+        });
+      }
     }
 
     // Separator before delete

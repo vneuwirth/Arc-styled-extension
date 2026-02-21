@@ -25,6 +25,75 @@ export function showContextMenu({ x, y, items }) {
       continue;
     }
 
+    // ── Submenu item (has children) ──────────────
+    if (item.children && item.children.length > 0) {
+      const row = el('div', {
+        className: 'context-menu-item context-menu-item-submenu',
+      });
+
+      row.appendChild(el('span', { text: item.label }));
+
+      const chevron = el('span', { className: 'context-menu-submenu-chevron' });
+      chevron.innerHTML = `<svg width="10" height="10" viewBox="0 0 16 16" fill="none">
+        <path d="M6 3L11 8L6 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+      row.appendChild(chevron);
+
+      // Build flyout submenu
+      const submenu = el('div', { className: 'context-submenu' });
+      for (const child of item.children) {
+        if (child.separator) {
+          submenu.appendChild(el('div', { className: 'context-menu-separator' }));
+          continue;
+        }
+        submenu.appendChild(el('div', {
+          className: [
+            'context-menu-item',
+            child.danger ? 'context-menu-item-danger' : ''
+          ],
+          text: child.label,
+          events: {
+            click: (e) => {
+              e.stopPropagation();
+              closeContextMenu();
+              child.action();
+            }
+          }
+        }));
+      }
+      row.appendChild(submenu);
+
+      // Show/hide submenu on hover
+      row.addEventListener('mouseenter', () => {
+        submenu.classList.add('context-submenu-visible');
+        // Position to the right of the parent menu, aligned to this row
+        const menuRect = menu.getBoundingClientRect();
+        submenu.style.top = `${row.offsetTop}px`;
+        submenu.style.left = `${menuRect.width - 4}px`;
+
+        // Clamp: if off-screen right, fly out to the left
+        requestAnimationFrame(() => {
+          const subRect = submenu.getBoundingClientRect();
+          if (subRect.right > window.innerWidth) {
+            submenu.style.left = `${-subRect.width + 4}px`;
+          }
+          if (subRect.bottom > window.innerHeight) {
+            submenu.style.top = `${row.offsetTop - (subRect.bottom - window.innerHeight) - 4}px`;
+          }
+        });
+      });
+
+      row.addEventListener('mouseleave', (e) => {
+        if (!row.contains(e.relatedTarget)) {
+          submenu.classList.remove('context-submenu-visible');
+        }
+      });
+
+      menu.appendChild(row);
+      continue;
+    }
+
+    // ── Regular item ────────────────────────────
     const row = el('div', {
       className: [
         'context-menu-item',

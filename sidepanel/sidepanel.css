@@ -741,6 +741,28 @@ body {
   outline-offset: -1.5px;
 }
 
+/* Insertion indicator — line between items for reorder drop */
+.bookmark-item.drop-before::before,
+.bookmark-item.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  background: var(--arc-primary);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.bookmark-item.drop-before::before {
+  top: -1px;
+}
+
+.bookmark-item.drop-after::after {
+  bottom: -1px;
+}
+
 /* Root-level drop zone — subtle bottom border when dragging to root */
 .bookmark-tree-container.drag-over-root {
   background: var(--bg-tertiary);
@@ -889,6 +911,37 @@ body {
   height: 1px;
   background: var(--border-light);
   margin: 4px 0;
+}
+
+/* ── Context Menu Submenu ── */
+.context-menu-item-submenu {
+  position: relative;
+  justify-content: space-between;
+}
+
+.context-menu-submenu-chevron {
+  display: flex;
+  align-items: center;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.context-submenu {
+  display: none;
+  position: absolute;
+  z-index: 301;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  padding: 4px 0;
+  min-width: 140px;
+  max-width: 200px;
+}
+
+.context-submenu-visible {
+  display: block;
 }
 
 /* ============================================

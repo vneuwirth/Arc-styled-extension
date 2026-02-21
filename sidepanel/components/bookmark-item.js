@@ -20,7 +20,7 @@ import { createFaviconImg } from '../utils/favicon.js';
  * @returns {HTMLElement}
  */
 export function createBookmarkItem(node, opts = {}) {
-  const { depth = 0, isExpanded = false, isPinned = false, onToggle, onClick, onDrop, onAddSubfolder, onContextMenu } = opts;
+  const { depth = 0, isExpanded = false, isPinned = false, onToggle, onClick, onDrop, onDropBetween, onAddSubfolder, onContextMenu } = opts;
   const isFolder = !node.url;
 
   const item = el('div', {
@@ -53,31 +53,65 @@ export function createBookmarkItem(node, opts = {}) {
     item.classList.remove('dragging');
   });
 
-  // ── Make folders a drop target ──────────────────
-  if (isFolder && onDrop) {
+  // ── Make items drop targets (zone-based detection) ──
+  if (onDrop || onDropBetween) {
     item.addEventListener('dragover', (e) => {
       e.preventDefault();
       e.stopPropagation();
       e.dataTransfer.dropEffect = 'move';
-      item.classList.add('drag-over');
+
+      // Clear previous drop indicator classes
+      item.classList.remove('drag-over', 'drop-before', 'drop-after');
+
+      const rect = item.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const height = rect.height;
+
+      if (isFolder) {
+        // Folders: 3-zone — top 25% insert before, middle 50% drop into, bottom 25% insert after
+        if (y < height * 0.25) {
+          item.classList.add('drop-before');
+        } else if (y > height * 0.75) {
+          item.classList.add('drop-after');
+        } else {
+          item.classList.add('drag-over');
+        }
+      } else {
+        // Bookmarks: 2-zone — top 50% insert before, bottom 50% insert after
+        if (y < height * 0.5) {
+          item.classList.add('drop-before');
+        } else {
+          item.classList.add('drop-after');
+        }
+      }
     });
 
     item.addEventListener('dragleave', (e) => {
-      // Only remove if leaving the item itself (not entering a child)
       if (!item.contains(e.relatedTarget)) {
-        item.classList.remove('drag-over');
+        item.classList.remove('drag-over', 'drop-before', 'drop-after');
       }
     });
 
     item.addEventListener('drop', (e) => {
       e.preventDefault();
       e.stopPropagation();
-      item.classList.remove('drag-over');
       const draggedId = e.dataTransfer.getData('text/plain');
-      // Guard: don't drop onto self
-      if (draggedId && draggedId !== node.id) {
-        onDrop(draggedId, node.id);
+
+      if (!draggedId || draggedId === node.id) {
+        item.classList.remove('drag-over', 'drop-before', 'drop-after');
+        return;
       }
+
+      if (item.classList.contains('drag-over') && isFolder && onDrop) {
+        // Drop INTO folder (existing behavior)
+        onDrop(draggedId, node.id);
+      } else if (item.classList.contains('drop-before') && onDropBetween) {
+        onDropBetween(draggedId, node.id, 'before');
+      } else if (item.classList.contains('drop-after') && onDropBetween) {
+        onDropBetween(draggedId, node.id, 'after');
+      }
+
+      item.classList.remove('drag-over', 'drop-before', 'drop-after');
     });
   }
 
