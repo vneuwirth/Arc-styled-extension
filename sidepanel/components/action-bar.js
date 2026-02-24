@@ -5,6 +5,7 @@ import { el, clearChildren } from '../utils/dom.js';
 import { bookmarkService } from '../services/bookmark-service.js';
 import { workspaceService } from '../services/workspace-service.js';
 import { themeService } from '../services/theme-service.js';
+import { backupService } from '../services/backup-service.js';
 import { showContextMenu } from './context-menu.js';
 import { bus, Events } from '../utils/event-bus.js';
 
@@ -45,9 +46,10 @@ export class ActionBar {
       }
     });
 
+    const displayName = ws.emoji ? `${ws.emoji} ${ws.name}` : ws.name;
     const name = el('span', {
       className: 'workspace-header-name',
-      text: ws.name,
+      text: displayName,
       style: { color: ws.color }
     });
     nameGroup.appendChild(name);
@@ -104,6 +106,12 @@ export class ActionBar {
       action: () => this._showColorMenu(ws, rect)
     });
 
+    // Set icon (emoji)
+    items.push({
+      label: ws.emoji ? 'Change icon…' : 'Set icon…',
+      action: () => this._showEmojiInput(ws)
+    });
+
     items.push({ separator: true });
 
     // Delete (only if more than 1 workspace)
@@ -141,6 +149,18 @@ export class ActionBar {
       }
     });
 
+    items.push({ separator: true });
+
+    // Backup & restore
+    items.push({
+      label: 'Export backup',
+      action: () => this._exportBackup()
+    });
+    items.push({
+      label: 'Import from backup…',
+      action: () => this._importBackup()
+    });
+
     showContextMenu({ x: rect.left, y: rect.bottom + 4, items });
   }
 
@@ -157,6 +177,17 @@ export class ActionBar {
       }
     }));
     showContextMenu({ x: fromRect.left, y: fromRect.bottom + 4, items });
+  }
+
+  _showEmojiInput(ws) {
+    const emoji = prompt(
+      ws.emoji
+        ? `Current icon: ${ws.emoji}\nEnter a new emoji (or leave empty to clear):`
+        : 'Enter an emoji for this workspace (use your OS emoji picker):',
+      ws.emoji || ''
+    );
+    if (emoji === null) return; // cancelled
+    workspaceService.setEmoji(ws.id, emoji.trim());
   }
 
   _startRename(ws) {
@@ -263,6 +294,114 @@ export class ActionBar {
     wrapper.appendChild(input);
     mainContent.insertBefore(wrapper, mainContent.firstChild);
     requestAnimationFrame(() => input.focus());
+  }
+
+  // ── Backup & Import ────────────────────────────────
+
+  async _exportBackup() {
+    try {
+      await backupService.downloadBackup();
+    } catch (err) {
+      alert(`Export failed: ${err.message}`);
+    }
+  }
+
+  async _importBackup() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+
+    input.addEventListener('change', async () => {
+      try {
+        const file = input.files[0];
+        if (!file) return;
+
+        const data = await backupService.readBackupFile(file);
+        const result = backupService.validateBackup(data);
+
+        if (!result.valid) {
+          alert(`Invalid backup file: ${result.error}`);
+          return;
+        }
+
+        const confirmed = await this._showImportConfirmation(result.summary);
+        if (!confirmed) return;
+
+        await backupService.restoreBackup(data);
+        location.reload();
+      } catch (err) {
+        alert(`Import failed: ${err.message}`);
+      } finally {
+        input.remove();
+      }
+    });
+
+    input.click();
+  }
+
+  /**
+   * Show a confirmation dialog before restoring a backup.
+   * Reuses the reinstall-prompt card styling for visual consistency.
+   * @param {Object} summary - Validation summary from backupService
+   * @returns {Promise<boolean>} True if user confirms
+   */
+  _showImportConfirmation(summary) {
+    return new Promise((resolve) => {
+      // Build the overlay
+      const overlay = el('div', { className: 'reinstall-prompt' });
+      const card = el('div', { className: 'reinstall-prompt-card' });
+
+      // Icon
+      const iconWrap = el('div', { className: 'reinstall-prompt-icon' });
+      iconWrap.innerHTML = `
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15v-2h2v2h-2zm0-4V7h2v6h-2z" fill="currentColor" opacity="0.6"/>
+        </svg>`;
+      card.appendChild(iconWrap);
+
+      // Title
+      card.appendChild(el('div', {
+        className: 'reinstall-prompt-title',
+        text: 'Restore from backup?'
+      }));
+
+      // Summary text
+      const dateStr = summary.createdAt
+        ? new Date(summary.createdAt).toLocaleString()
+        : 'unknown date';
+      const names = summary.workspaceNames.join(', ');
+      card.appendChild(el('div', {
+        className: 'reinstall-prompt-text',
+        text: `This will replace all current workspaces and bookmarks with the backup data.\n\n` +
+          `${summary.workspaceCount} workspace${summary.workspaceCount !== 1 ? 's' : ''}: ${names}\n` +
+          `${summary.bookmarkCount} bookmark${summary.bookmarkCount !== 1 ? 's' : ''}\n` +
+          `Backup date: ${dateStr}`
+      }));
+
+      // Buttons
+      const actions = el('div', { className: 'reinstall-prompt-actions' });
+
+      const restoreBtn = el('button', {
+        className: 'btn btn-primary btn-sm',
+        text: 'Restore',
+        events: { click: () => { overlay.remove(); resolve(true); } }
+      });
+
+      const cancelBtn = el('button', {
+        className: 'btn btn-ghost btn-sm',
+        text: 'Cancel',
+        events: { click: () => { overlay.remove(); resolve(false); } }
+      });
+
+      actions.appendChild(restoreBtn);
+      actions.appendChild(cancelBtn);
+      card.appendChild(actions);
+
+      overlay.appendChild(card);
+      document.getElementById('app').appendChild(overlay);
+    });
   }
 
   destroy() {

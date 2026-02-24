@@ -112,7 +112,9 @@ export class BookmarkTree {
 
       // Filter out pinned items (they're shown in the pinned section)
       const pinnedIds = new Set(ws.pinnedBookmarkIds || []);
-      const unpinnedChildren = children.filter(c => !pinnedIds.has(c.id));
+      const unpinnedChildren = children.filter(c =>
+        !pinnedIds.has(c.id) && c.title !== '__shortcuts__'
+      );
 
       clearChildren(this.container);
 

@@ -1,5 +1,6 @@
 // Workspace switcher — vertical space bar (Arc-style colored circle icons)
-// Right-click context menu for Rename / Change Color / Delete
+// Right-click context menu for Rename / Change Color / Set Icon / Delete
+// Drag-and-drop reordering of workspace circles
 
 import { el, clearChildren } from '../utils/dom.js';
 import { workspaceService } from '../services/workspace-service.js';
@@ -15,7 +16,7 @@ export class WorkspaceSwitcher {
   constructor(container) {
     this.container = container;
     this._unsubscribers = [];
-    this._popover = null;        // active create/rename popover
+    this._popover = null;        // active create/rename/emoji popover
     this._outsideClickHandler = null;
   }
 
@@ -25,6 +26,7 @@ export class WorkspaceSwitcher {
       bus.on(Events.WORKSPACE_CREATED, () => this.render()),
       bus.on(Events.WORKSPACE_DELETED, () => this.render()),
       bus.on(Events.WORKSPACE_RENAMED, () => this.render()),
+      bus.on(Events.WORKSPACE_REORDERED, () => this.render()),
     );
 
     // Restore compact mode state
@@ -47,6 +49,8 @@ export class WorkspaceSwitcher {
     for (const ws of workspaces) {
       const isActive = active && ws.id === active.id;
       const initial = (ws.name || '?').charAt(0).toUpperCase();
+      const hasEmoji = ws.emoji && ws.emoji.length > 0;
+      const displayText = hasEmoji ? ws.emoji : initial;
 
       const btn = el('button', {
         className: ['space-icon', isActive ? 'active' : ''],
@@ -62,12 +66,83 @@ export class WorkspaceSwitcher {
       });
 
       const inner = el('span', {
-        className: 'space-icon-inner',
-        text: initial,
-        style: { backgroundColor: ws.color }
+        className: ['space-icon-inner', hasEmoji ? 'space-icon-emoji' : ''],
+        text: displayText,
+        style: { backgroundColor: hasEmoji ? 'transparent' : ws.color }
       });
 
       btn.appendChild(inner);
+
+      // ── Drag-and-drop for reordering ──
+      btn.draggable = true;
+
+      btn.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('application/x-workspace-id', ws.id);
+        e.dataTransfer.effectAllowed = 'move';
+        requestAnimationFrame(() => btn.classList.add('space-icon-dragging'));
+      });
+
+      btn.addEventListener('dragend', () => {
+        btn.classList.remove('space-icon-dragging');
+        this.container.querySelectorAll('.space-icon').forEach(el => {
+          el.classList.remove('space-drop-before', 'space-drop-after');
+        });
+      });
+
+      btn.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'move';
+
+        // Clear previous indicators on all siblings
+        this.container.querySelectorAll('.space-icon').forEach(el => {
+          el.classList.remove('space-drop-before', 'space-drop-after');
+        });
+
+        // Determine top/bottom half for insertion indicator
+        const rect = btn.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        if (y < rect.height / 2) {
+          btn.classList.add('space-drop-before');
+        } else {
+          btn.classList.add('space-drop-after');
+        }
+      });
+
+      btn.addEventListener('dragleave', (e) => {
+        if (!btn.contains(e.relatedTarget)) {
+          btn.classList.remove('space-drop-before', 'space-drop-after');
+        }
+      });
+
+      btn.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const draggedId = e.dataTransfer.getData('application/x-workspace-id');
+        btn.classList.remove('space-drop-before', 'space-drop-after');
+
+        if (!draggedId || draggedId === ws.id) return;
+
+        // Calculate new order
+        const currentOrder = workspaceService.getAll().map(w => w.id);
+        const fromIndex = currentOrder.indexOf(draggedId);
+        if (fromIndex === -1) return;
+
+        // Remove dragged item
+        currentOrder.splice(fromIndex, 1);
+
+        // Determine insertion point
+        let toIndex = currentOrder.indexOf(ws.id);
+        const rect = btn.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        if (y >= rect.height / 2) {
+          toIndex += 1; // insert after
+        }
+
+        currentOrder.splice(toIndex, 0, draggedId);
+        workspaceService.reorder(currentOrder);
+      });
+
       this.container.appendChild(btn);
     }
 
@@ -146,6 +221,17 @@ export class WorkspaceSwitcher {
       }
     });
 
+    // Set icon (emoji)
+    items.push({
+      label: ws.emoji ? 'Change icon…' : 'Set icon…',
+      action: () => {
+        const anchorBtn = this.container.querySelector(`[data-workspace-id="${ws.id}"]`);
+        if (anchorBtn) {
+          this._showEmojiPopover(ws, anchorBtn);
+        }
+      }
+    });
+
     items.push({ separator: true });
 
     // Delete (disabled if only 1 workspace)
@@ -207,6 +293,90 @@ export class WorkspaceSwitcher {
 
     document.body.appendChild(popover);
     this._popover = popover;
+
+    // Close on outside click
+    requestAnimationFrame(() => {
+      this._outsideClickHandler = (e) => {
+        if (this._popover && !this._popover.contains(e.target) && !this.container.contains(e.target)) {
+          this._closePopover();
+        }
+      };
+      document.addEventListener('click', this._outsideClickHandler, true);
+    });
+  }
+
+  // ── Emoji Popover ──────────────────────────────────
+  _showEmojiPopover(ws, anchorBtn) {
+    this._closePopover();
+
+    const popover = el('div', { className: 'space-create-popover' });
+
+    // Position next to the anchor
+    const rect = anchorBtn.getBoundingClientRect();
+    popover.style.top = `${rect.top}px`;
+    popover.style.transform = 'none';
+
+    // Label
+    const label = el('div', {
+      className: 'popover-label',
+      text: 'Workspace icon'
+    });
+    popover.appendChild(label);
+
+    // Emoji input
+    const input = el('input', {
+      className: 'workspace-emoji-input',
+      attrs: {
+        type: 'text',
+        placeholder: 'Type or paste an emoji',
+        maxlength: '4',
+        value: ws.emoji || ''
+      }
+    });
+    popover.appendChild(input);
+
+    // Actions
+    const actions = el('div', { className: 'workspace-create-actions' });
+
+    const saveBtn = el('button', {
+      className: 'btn btn-primary btn-sm',
+      text: 'Save',
+      attrs: { type: 'button' },
+      events: {
+        click: async () => {
+          const emoji = input.value.trim();
+          await workspaceService.setEmoji(ws.id, emoji);
+          this._closePopover();
+        }
+      }
+    });
+
+    const clearBtn = el('button', {
+      className: 'btn btn-ghost btn-sm',
+      text: 'Clear',
+      attrs: { type: 'button' },
+      events: {
+        click: async () => {
+          await workspaceService.setEmoji(ws.id, '');
+          this._closePopover();
+        }
+      }
+    });
+
+    actions.appendChild(saveBtn);
+    actions.appendChild(clearBtn);
+    popover.appendChild(actions);
+
+    document.body.appendChild(popover);
+    this._popover = popover;
+
+    requestAnimationFrame(() => input.focus());
+
+    // Keyboard shortcuts
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveBtn.click();
+      if (e.key === 'Escape') this._closePopover();
+    });
 
     // Close on outside click
     requestAnimationFrame(() => {

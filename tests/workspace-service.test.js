@@ -1219,4 +1219,519 @@ describe('WorkspaceService', () => {
       expect(ws.pinnedBookmarks[0].url).toBe('https://google.com');
     });
   });
+
+  // ── Orphaned Bookmark Folder Adoption ──────────────
+
+  describe('_adoptOrphanedBookmarkFolders', () => {
+    it('adopts unclaimed bookmark folders after sync-based reinstall (1 sync, 3 folders)', async () => {
+      // Scenario: sync partially restored with only 1 workspace,
+      // but all 3 bookmark folders survive under Arc Spaces.
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      const folder3 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Germany' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+      await bookmarkService.create({ parentId: folder3.id, title: 'Berlin', url: 'https://berlin.de' });
+
+      // Seed only 1 workspace in sync (simulating partial sync recovery)
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default'], version: 2 });
+      // No local state — simulating reinstall
+
+      await workspaceService.init();
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+
+      await workspaceService.continueInit();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(3);
+      expect(all.map(ws => ws.name).sort()).toEqual(['Developer', 'Germany', 'Personal']);
+
+      // Each workspace should have valid rootFolderId pointing to existing folder
+      for (const ws of all) {
+        expect(ws.rootFolderId).toBeTruthy();
+        const folder = await bookmarkService.get(ws.rootFolderId);
+        expect(folder).toBeTruthy();
+        expect(folder.title).toBe(ws.name);
+      }
+    });
+
+    it('does not duplicate already-claimed folders', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Work' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+
+      // Both workspaces exist in sync (fully restored)
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceItem('ws_work', {
+        id: 'ws_work', name: 'Work', icon: 'folder', color: '#3B82F6',
+        colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [], created: 2000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default', 'ws_work'], version: 2 });
+
+      await workspaceService.init();
+      await workspaceService.continueInit();
+
+      // Should still have exactly 2, no extra adopted
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(2);
+    });
+
+    it('adopted workspaces get cycling colors based on existing count', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      const folder3 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Germany' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+      await bookmarkService.create({ parentId: folder3.id, title: 'Berlin', url: 'https://berlin.de' });
+
+      // 1 workspace already in sync (purple)
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default'], version: 2 });
+
+      await workspaceService.init();
+      await workspaceService.continueInit();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(3);
+      // First workspace keeps its original color
+      expect(all[0].colorScheme).toBe('purple');
+      // Adopted workspaces start from offset 1 (blue, cyan)
+      expect(all[1].colorScheme).toBe('blue');
+      expect(all[2].colorScheme).toBe('cyan');
+    });
+
+    it('adopted workspaces are saved to sync storage', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default'], version: 2 });
+
+      await workspaceService.init();
+      await workspaceService.continueInit();
+
+      // ws_meta should include the adopted workspace
+      const meta = await storageService.getWorkspaceMeta();
+      expect(meta.order.length).toBe(2);
+
+      // The adopted workspace should be in sync storage
+      const all = workspaceService.getAll();
+      const adopted = all.find(ws => ws.name === 'Developer');
+      expect(adopted).toBeTruthy();
+      const syncItem = await storageService.getWorkspaceItem(adopted.id);
+      expect(syncItem).toBeTruthy();
+      expect(syncItem.name).toBe('Developer');
+      // rootFolderId should NOT be in sync
+      expect(syncItem.rootFolderId).toBeUndefined();
+    });
+
+    it('re-init after adoption does not duplicate workspaces', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+
+      await storageService.saveWorkspaceItem('ws_default', {
+        id: 'ws_default', name: 'Personal', icon: 'home', color: '#7C5CFC',
+        colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [], created: 1000,
+      });
+      await storageService.saveWorkspaceMeta({ order: ['ws_default'], version: 2 });
+
+      await workspaceService.init();
+      await workspaceService.continueInit();
+      expect(workspaceService.getAll().length).toBe(2);
+
+      // Re-init (simulating panel reopen)
+      await workspaceService.init();
+      expect(workspaceService.getAll().length).toBe(2);
+    });
+  });
+
+  // ── getBookmarkFolderNames ──────────────────────────
+
+  describe('getBookmarkFolderNames', () => {
+    it('returns all subfolder names from Arc Spaces root', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      await bookmarkService.create({ parentId: arcRoot.id, title: 'Germany' });
+      // Also add a non-folder bookmark (should be excluded)
+      await bookmarkService.create({ parentId: arcRoot.id, title: 'Loose', url: 'https://loose.com' });
+
+      await workspaceService.init();
+
+      const names = await workspaceService.getBookmarkFolderNames();
+      expect(names.sort()).toEqual(['Developer', 'Germany', 'Personal']);
+    });
+
+    it('returns empty array when no Arc Spaces root exists', async () => {
+      const names = await workspaceService.getBookmarkFolderNames();
+      expect(names).toEqual([]);
+    });
+  });
+
+  // ── Bookmark-based reinstall recovery ──────────────
+
+  describe('shortcut bookmark persistence', () => {
+    it('addShortcut creates bookmark in __shortcuts__ folder', async () => {
+      const { arcRoot, wsFolder } = await seedBookmarks();
+      await seedV2Workspaces({
+        arcRootId: arcRoot.id,
+        workspaces: [{
+          id: 'ws1', name: 'Personal', icon: 'home', color: '#7C5CFC',
+          colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [],
+          rootFolderId: wsFolder.id, created: Date.now(),
+        }],
+      });
+      await workspaceService.init();
+
+      await workspaceService.addShortcut('https://gmail.com', 'Gmail');
+
+      // Verify __shortcuts__ folder was created with the bookmark
+      const children = await bookmarkService.getChildren(wsFolder.id);
+      const shortcutsFolder = children.find(c => c.title === '__shortcuts__');
+      expect(shortcutsFolder).toBeTruthy();
+
+      const bookmarks = await bookmarkService.getChildren(shortcutsFolder.id);
+      expect(bookmarks.length).toBe(1);
+      expect(bookmarks[0].url).toBe('https://gmail.com');
+      expect(bookmarks[0].title).toBe('Gmail');
+    });
+
+    it('removeShortcut removes bookmark from __shortcuts__ folder', async () => {
+      const { arcRoot, wsFolder } = await seedBookmarks();
+      await seedV2Workspaces({
+        arcRootId: arcRoot.id,
+        workspaces: [{
+          id: 'ws1', name: 'Personal', icon: 'home', color: '#7C5CFC',
+          colorScheme: 'purple', pinnedBookmarks: [],
+          shortcuts: [{ url: 'https://gmail.com', title: 'Gmail' }],
+          rootFolderId: wsFolder.id, created: Date.now(),
+        }],
+      });
+      await workspaceService.init();
+
+      // First add to create the bookmark folder
+      await workspaceService.addShortcut('https://drive.google.com', 'Drive');
+      // Then remove one
+      await workspaceService.removeShortcut('https://gmail.com');
+
+      const children = await bookmarkService.getChildren(wsFolder.id);
+      const shortcutsFolder = children.find(c => c.title === '__shortcuts__');
+      expect(shortcutsFolder).toBeTruthy();
+
+      const bookmarks = await bookmarkService.getChildren(shortcutsFolder.id);
+      expect(bookmarks.length).toBe(1);
+      expect(bookmarks[0].url).toBe('https://drive.google.com');
+    });
+
+    it('removing last shortcut deletes __shortcuts__ folder', async () => {
+      const { arcRoot, wsFolder } = await seedBookmarks();
+      await seedV2Workspaces({
+        arcRootId: arcRoot.id,
+        workspaces: [{
+          id: 'ws1', name: 'Personal', icon: 'home', color: '#7C5CFC',
+          colorScheme: 'purple', pinnedBookmarks: [],
+          shortcuts: [{ url: 'https://gmail.com', title: 'Gmail' }],
+          rootFolderId: wsFolder.id, created: Date.now(),
+        }],
+      });
+      await workspaceService.init();
+
+      // Sync the initial shortcut to bookmarks
+      await workspaceService.addShortcut('https://gmail.com', 'Gmail'); // no-op (duplicate), but triggers sync
+      await workspaceService.removeShortcut('https://gmail.com');
+
+      const children = await bookmarkService.getChildren(wsFolder.id);
+      const shortcutsFolder = children.find(c => c.title === '__shortcuts__');
+      expect(shortcutsFolder).toBeFalsy();
+    });
+
+    it('adopted workspace loads shortcuts from __shortcuts__ folder', async () => {
+      // Simulate reinstall: sync has 1 workspace, bookmarks have 2
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Work' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+
+      // Create __shortcuts__ folder in folder2 with saved shortcuts
+      const shortcutsFolder = await bookmarkService.create({ parentId: folder2.id, title: '__shortcuts__' });
+      await bookmarkService.create({ parentId: shortcutsFolder.id, title: 'Gmail', url: 'https://gmail.com' });
+      await bookmarkService.create({ parentId: shortcutsFolder.id, title: 'Drive', url: 'https://drive.google.com' });
+
+      // Seed sync with only 1 workspace (folder1)
+      await seedV2Workspaces({
+        arcRootId: arcRoot.id,
+        workspaces: [{
+          id: 'ws1', name: 'Personal', icon: 'home', color: '#7C5CFC',
+          colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [],
+          rootFolderId: folder1.id, created: Date.now(),
+        }],
+      });
+
+      await workspaceService.init();
+      // Reinstall detected
+      await workspaceService.continueInit();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(2);
+
+      const workWs = all.find(ws => ws.name === 'Work');
+      expect(workWs).toBeTruthy();
+      expect(workWs.shortcuts.length).toBe(2);
+      expect(workWs.shortcuts.map(s => s.url).sort()).toEqual([
+        'https://drive.google.com',
+        'https://gmail.com',
+      ]);
+    });
+
+    it('bookmark-recovered workspace loads shortcuts from __shortcuts__ folder', async () => {
+      // No sync data at all — full bookmark recovery
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+
+      // Create __shortcuts__ folder
+      const shortcutsFolder = await bookmarkService.create({ parentId: folder1.id, title: '__shortcuts__' });
+      await bookmarkService.create({ parentId: shortcutsFolder.id, title: 'Gmail', url: 'https://gmail.com' });
+
+      await workspaceService.init();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(1);
+      expect(all[0].shortcuts.length).toBe(1);
+      expect(all[0].shortcuts[0].url).toBe('https://gmail.com');
+      expect(all[0].shortcuts[0].title).toBe('Gmail');
+    });
+
+    it('__shortcuts__ folder is created lazily on first shortcut add', async () => {
+      const { arcRoot, wsFolder } = await seedBookmarks();
+      await seedV2Workspaces({
+        arcRootId: arcRoot.id,
+        workspaces: [{
+          id: 'ws1', name: 'Personal', icon: 'home', color: '#7C5CFC',
+          colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [],
+          rootFolderId: wsFolder.id, created: Date.now(),
+        }],
+      });
+      await workspaceService.init();
+
+      // Before adding any shortcut, no __shortcuts__ folder should exist
+      let children = await bookmarkService.getChildren(wsFolder.id);
+      let shortcutsFolder = children.find(c => c.title === '__shortcuts__');
+      expect(shortcutsFolder).toBeFalsy();
+
+      // Add a shortcut — folder should be created
+      await workspaceService.addShortcut('https://gmail.com', 'Gmail');
+
+      children = await bookmarkService.getChildren(wsFolder.id);
+      shortcutsFolder = children.find(c => c.title === '__shortcuts__');
+      expect(shortcutsFolder).toBeTruthy();
+    });
+  });
+
+  describe('bookmark-based reinstall recovery', () => {
+    it('recovers all workspaces from surviving bookmark folders (3 subfolders)', async () => {
+      // No sync data at all — Chrome deleted it on uninstall.
+      // But the bookmark folders survive.
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      const folder3 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Germany' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+      await bookmarkService.create({ parentId: folder3.id, title: 'Berlin', url: 'https://berlin.de' });
+
+      await workspaceService.init();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(3);
+      expect(all.map(ws => ws.name).sort()).toEqual(['Developer', 'Germany', 'Personal']);
+    });
+
+    it('recovers single subfolder with bookmarks', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+
+      await workspaceService.init();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+      expect(workspaceService.getAll().length).toBe(1);
+      expect(workspaceService.getAll()[0].name).toBe('Personal');
+    });
+
+    it('does NOT trigger recovery for empty Arc Spaces folder', async () => {
+      await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      // No subfolders at all
+
+      await workspaceService.init();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(false);
+      // Should have created default workspace via normal first-run
+      expect(workspaceService.getAll().length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('does NOT trigger recovery for single empty subfolder', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      // Subfolder exists but is empty — looks like a normal first-run
+
+      await workspaceService.init();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(false);
+    });
+
+    it('continueInit completes after bookmark recovery', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      const folder3 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Germany' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+      await bookmarkService.create({ parentId: folder3.id, title: 'Berlin', url: 'https://berlin.de' });
+
+      await workspaceService.init();
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+
+      await workspaceService.continueInit();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(3);
+      for (const ws of all) {
+        expect(ws.rootFolderId).toBeTruthy();
+        const folder = await bookmarkService.get(ws.rootFolderId);
+        expect(folder).toBeTruthy();
+        expect(folder.title).toBe(ws.name);
+      }
+    });
+
+    it('resetAndSetup after bookmark recovery creates 1 fresh workspace (no loop)', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+
+      await workspaceService.init();
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+
+      await workspaceService.resetAndSetup();
+
+      expect(workspaceService.needsReinstallPrompt).toBe(false);
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(1);
+      expect(all[0].name).toBe('Personal');
+    });
+
+    it('sync data takes priority over bookmark recovery', async () => {
+      // Both sync data AND bookmark folders exist — sync path should win
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+
+      // Seed sync data
+      await seedV2Workspaces({
+        arcRootId: arcRoot.id,
+        workspaces: [
+          {
+            id: 'ws1', name: 'Personal', icon: 'folder', color: '#7C5CFC',
+            colorScheme: 'purple', pinnedBookmarks: [], shortcuts: [],
+            rootFolderId: folder1.id, created: Date.now(),
+          },
+          {
+            id: 'ws2', name: 'Developer', icon: 'folder', color: '#3B82F6',
+            colorScheme: 'blue', pinnedBookmarks: [], shortcuts: [],
+            rootFolderId: folder2.id, created: Date.now(),
+          },
+        ],
+      });
+
+      await workspaceService.init();
+
+      // Should use normal v2 load path (not bookmark recovery)
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(2);
+      expect(all[0].id).toBe('ws1');
+    });
+
+    it('re-init after bookmark recovery does not duplicate workspaces', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Developer' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+
+      await workspaceService.init();
+      expect(workspaceService.needsReinstallPrompt).toBe(true);
+      await workspaceService.continueInit();
+      expect(workspaceService.getAll().length).toBe(2);
+
+      // Re-init (simulating panel reopen)
+      await workspaceService.init();
+      // Second init finds sync data written by first — no re-recovery
+      expect(workspaceService.getAll().length).toBe(2);
+    });
+
+    it('first recovered workspace gets ws_default ID and home icon', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      const folder1 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Personal' });
+      const folder2 = await bookmarkService.create({ parentId: arcRoot.id, title: 'Work' });
+      await bookmarkService.create({ parentId: folder1.id, title: 'Google', url: 'https://google.com' });
+      await bookmarkService.create({ parentId: folder2.id, title: 'GitHub', url: 'https://github.com' });
+
+      await workspaceService.init();
+
+      const all = workspaceService.getAll();
+      expect(all[0].id).toBe('ws_default');
+      expect(all[0].icon).toBe('home');
+      expect(all[1].id).not.toBe('ws_default');
+      expect(all[1].icon).toBe('folder');
+    });
+
+    it('recovered workspaces get cycling colors', async () => {
+      const arcRoot = await bookmarkService.create({ parentId: '2', title: 'Arc Spaces' });
+      for (let i = 0; i < 4; i++) {
+        const folder = await bookmarkService.create({ parentId: arcRoot.id, title: `Space ${i}` });
+        await bookmarkService.create({ parentId: folder.id, title: `BM ${i}`, url: `https://site${i}.com` });
+      }
+
+      await workspaceService.init();
+      await workspaceService.continueInit();
+
+      const all = workspaceService.getAll();
+      expect(all.length).toBe(4);
+      // Colors should cycle through WORKSPACE_COLORS
+      expect(all[0].colorScheme).toBe('purple');
+      expect(all[1].colorScheme).toBe('blue');
+      expect(all[2].colorScheme).toBe('cyan');
+      expect(all[3].colorScheme).toBe('green');
+    });
+  });
 });

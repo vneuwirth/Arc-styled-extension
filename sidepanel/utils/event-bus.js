@@ -58,6 +58,7 @@ export const Events = {
   WORKSPACE_CREATED: 'workspace:created',
   WORKSPACE_DELETED: 'workspace:deleted',
   WORKSPACE_RENAMED: 'workspace:renamed',
+  WORKSPACE_REORDERED: 'workspace:reordered',
   BOOKMARK_CREATED: 'bookmark:created',
   BOOKMARK_REMOVED: 'bookmark:removed',
   BOOKMARK_CHANGED: 'bookmark:changed',

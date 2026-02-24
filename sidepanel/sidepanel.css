@@ -205,6 +205,68 @@ body {
   opacity: 1;
 }
 
+/* ── Space Bar Drag-and-Drop ── */
+.space-icon[draggable] {
+  cursor: grab;
+}
+
+.space-icon.space-icon-dragging {
+  opacity: 0.3;
+  transform: scale(0.9);
+}
+
+.space-icon.space-drop-before::before,
+.space-icon.space-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  background: var(--arc-primary);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.space-icon.space-drop-before::before {
+  top: -3px;
+}
+
+.space-icon.space-drop-after::after {
+  bottom: -3px;
+}
+
+/* ── Emoji Workspace Icons ── */
+.space-icon-inner.space-icon-emoji {
+  background-color: transparent !important;
+  font-size: 18px;
+  line-height: 1;
+  color: initial;
+  font-weight: normal;
+  text-transform: none;
+}
+
+/* Emoji input in popover */
+.workspace-emoji-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-family: var(--font);
+  font-size: 20px;
+  text-align: center;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+  transition: border-color var(--transition);
+  margin-bottom: 8px;
+}
+
+.workspace-emoji-input:focus {
+  border-color: var(--arc-primary);
+  box-shadow: 0 0 0 2px var(--arc-primary-light);
+}
+
 /* Space bar create popover */
 .space-create-popover {
   position: fixed;

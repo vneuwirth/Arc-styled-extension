@@ -165,16 +165,26 @@ class App {
    * Show reinstall prompt modal. Returns a promise that resolves
    * when the user makes a choice (Restore or Start Fresh).
    */
-  _showReinstallPrompt() {
-    return new Promise((resolve) => {
-      const prompt = document.getElementById('reinstall-prompt');
-      if (!prompt) {
-        // No prompt element in HTML — fall back to restoring silently
-        workspaceService.continueInit().then(resolve);
-        return;
-      }
+  async _showReinstallPrompt() {
+    const prompt = document.getElementById('reinstall-prompt');
+    if (!prompt) {
+      // No prompt element in HTML — fall back to restoring silently
+      await workspaceService.continueInit();
+      return;
+    }
 
-      prompt.classList.remove('hidden');
+    // Scan bookmark folders for workspace names (more complete than partial sync data)
+    const textEl = prompt.querySelector('.reinstall-prompt-text');
+    if (textEl) {
+      const folderNames = await workspaceService.getBookmarkFolderNames();
+      if (folderNames.length > 0) {
+        textEl.textContent = `Found ${folderNames.length} workspace${folderNames.length !== 1 ? 's' : ''}: ${folderNames.join(', ')}. Would you like to restore or start fresh?`;
+      }
+    }
+
+    prompt.classList.remove('hidden');
+
+    return new Promise((resolve) => {
 
       const restoreBtn = document.getElementById('reinstall-restore');
       const freshBtn = document.getElementById('reinstall-fresh');

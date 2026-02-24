@@ -10,6 +10,42 @@ import { storageService } from './storage-service.js';
 import { bookmarkService } from './bookmark-service.js';
 import { bus, Events } from '../utils/event-bus.js';
 
+const SHORTCUTS_FOLDER_NAME = '__shortcuts__';
+
+/**
+ * Regex to match a single emoji (or ZWJ sequence) at the start of a string,
+ * followed by a space. Covers most common emoji including skin tones and flags.
+ */
+const EMOJI_PREFIX_RE = /^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)(\u200D(\p{Emoji_Presentation}|\p{Emoji}\uFE0F))*\s/u;
+
+/**
+ * Extract an emoji prefix from a bookmark folder title.
+ * @param {string} title
+ * @returns {{ emoji: string, name: string }}
+ * @example extractEmojiPrefix("🏠 Personal") → { emoji: "🏠", name: "Personal" }
+ * @example extractEmojiPrefix("Personal")    → { emoji: "",   name: "Personal" }
+ */
+function extractEmojiPrefix(title) {
+  const match = title.match(EMOJI_PREFIX_RE);
+  if (match) {
+    const emoji = match[0].trimEnd();
+    const name = title.slice(match[0].length);
+    return { emoji, name };
+  }
+  return { emoji: '', name: title };
+}
+
+/**
+ * Build a bookmark folder title from a name and optional emoji.
+ * @param {string} name
+ * @param {string} emoji
+ * @returns {string}
+ */
+function buildFolderTitle(name, emoji) {
+  if (emoji) return `${emoji} ${name}`;
+  return name;
+}
+
 const WORKSPACE_COLORS = [
   { name: 'purple', color: '#7C5CFC', light: '#EDE9FE' },
   { name: 'blue', color: '#3B82F6', light: '#DBEAFE' },
@@ -159,6 +195,14 @@ class WorkspaceService {
             // 3. No data at all — first-run setup
             console.log('Arc Spaces init: no sync data found, running first-run setup');
             await this._firstRunSetup();
+
+            // _firstRunSetup may have detected surviving bookmark folders
+            // and set the reinstall prompt flag — return early like the
+            // sync-based reinstall detection above.
+            if (this.needsReinstallPrompt) {
+              console.log('Arc Spaces: bookmark-based reinstall detected, prompting user');
+              return;
+            }
           }
         }
 
@@ -217,6 +261,9 @@ class WorkspaceService {
     this.needsReinstallPrompt = false;
     this._reinstallMeta = null;
     await this._completeInit();
+    // Adopt any bookmark folders not claimed by existing workspaces.
+    // Handles reinstall where sync only partially restored (e.g. 1 of 3 workspaces).
+    await this._adoptOrphanedBookmarkFolders();
   }
 
   /**
@@ -242,8 +289,9 @@ class WorkspaceService {
     this._localState = null;
     this._arcSpacesRootId = null;
 
-    // Run first-time setup (creates default workspace)
-    await this._firstRunSetup();
+    // Run first-time setup (creates default workspace).
+    // Skip bookmark recovery — user explicitly chose "Start Fresh".
+    await this._firstRunSetup({ skipBookmarkRecovery: true });
 
     // Complete the remaining init steps
     await this._completeInit();
@@ -339,14 +387,75 @@ class WorkspaceService {
   }
 
   /**
+   * Rebuild workspace data from surviving bookmark folders after reinstall.
+   * Called when all sync data is gone (Chrome deletes it on uninstall) but
+   * the "Arc Spaces" bookmark folder tree still exists with user data.
+   * Creates a workspace for each subfolder, writes sync + local state.
+   * @param {string} rootId - The "Arc Spaces" root bookmark folder ID
+   * @param {Array} subfolders - Subfolder bookmark nodes under the root
+   */
+  async _rebuildFromBookmarkFolders(rootId, subfolders) {
+    this._order = [];
+    this._items = {};
+    const rootFolderIds = {};
+
+    for (let i = 0; i < subfolders.length; i++) {
+      const folder = subfolders[i];
+      const wsId = i === 0 ? 'ws_default' : `ws_${Date.now().toString(36)}_${i}`;
+      const colorInfo = WORKSPACE_COLORS[i % WORKSPACE_COLORS.length];
+
+      // Extract emoji from folder title prefix (e.g. "🏠 Personal" → emoji: "🏠", name: "Personal")
+      const { emoji, name } = extractEmojiPrefix(folder.title);
+
+      // Restore shortcuts from __shortcuts__ bookmark folder if present
+      const shortcuts = await this._loadShortcutsFromBookmarks(folder.id);
+
+      const workspace = {
+        id: wsId,
+        name,
+        emoji,
+        icon: i === 0 ? 'home' : 'folder',
+        color: colorInfo.color,
+        colorScheme: colorInfo.name,
+        pinnedBookmarks: [],
+        shortcuts,
+        created: Date.now(),
+      };
+
+      this._order.push(wsId);
+      this._items[wsId] = { ...workspace, rootFolderId: folder.id };
+      rootFolderIds[wsId] = folder.id;
+
+      // Save workspace item to sync
+      await storageService.saveWorkspaceItem(wsId, this._syncableItem(workspace));
+    }
+
+    // Save meta
+    await storageService.saveWorkspaceMeta({ order: [...this._order], version: 2 });
+
+    // Save local state
+    this._localState = {
+      activeWorkspaceId: this._order[0],
+      rootFolderIds,
+    };
+    await storageService.saveWorkspaceLocal(this._localState);
+    this._arcSpacesRootId = rootId;
+    await storageService.saveArcSpacesRootIdLocal(rootId);
+  }
+
+  /**
    * First-run: create the Arc Spaces folder and default workspace.
    * Includes a safety re-check to avoid overwriting synced data from another device
    * (sync data may arrive slightly after the first read).
    *
    * On a new device where sync data may still be propagating, we delay the sync
    * write briefly so incoming data from another device can arrive first.
+   *
+   * @param {Object} [options]
+   * @param {boolean} [options.skipBookmarkRecovery=false] - Skip bookmark-based
+   *   reinstall detection (used by resetAndSetup to avoid infinite loop).
    */
-  async _firstRunSetup() {
+  async _firstRunSetup({ skipBookmarkRecovery = false } = {}) {
     // Safety re-check: v2 data may have arrived since our first read
     const freshMeta = await storageService.getWorkspaceMeta();
     if (freshMeta && freshMeta.version === 2) {
@@ -391,6 +500,36 @@ class WorkspaceService {
       await storageService.saveWorkspaceMeta(recoveredMeta);
       await this._loadV2(recoveredMeta);
       return;
+    }
+
+    // ── Bookmark-based reinstall detection ──
+    // All sync data is gone (Chrome deletes it on uninstall), but the
+    // bookmark folders under "Arc Spaces" survive because they're regular
+    // Chrome bookmarks. Detect them and offer to rebuild workspaces.
+    if (!skipBookmarkRecovery) {
+      const bestRootId = await this._findBestArcSpacesRoot();
+      if (bestRootId) {
+        const rootChildren = await bookmarkService.getChildren(bestRootId);
+        const subfolders = rootChildren.filter(c => !c.url);
+
+        if (subfolders.length > 0) {
+          // Check for meaningful content: >1 subfolder, or 1 subfolder with bookmarks
+          let hasContent = subfolders.length > 1;
+          if (!hasContent && subfolders.length === 1) {
+            const children = await bookmarkService.getChildren(subfolders[0].id);
+            hasContent = children.length > 0;
+          }
+
+          if (hasContent) {
+            console.log('Arc Spaces: bookmark folders survived reinstall, rebuilding',
+              subfolders.map(f => f.title));
+            await this._rebuildFromBookmarkFolders(bestRootId, subfolders);
+            this._reinstallMeta = { order: [...this._order], version: 2 };
+            this.needsReinstallPrompt = true;
+            return;
+          }
+        }
+      }
     }
 
     // arcSpacesRootId from local storage
@@ -439,6 +578,7 @@ class WorkspaceService {
       [wsId]: {
         id: wsId,
         name: 'Personal',
+        emoji: '',
         icon: 'home',
         color: '#7C5CFC',
         colorScheme: 'purple',
@@ -641,7 +781,11 @@ class WorkspaceService {
       }
 
       // Try to find a matching local folder by name (skip already-claimed folders)
-      const match = localFolders.find(c => !claimedFolderIds.has(c.id) && c.title === ws.name);
+      // Match against both emoji-prefixed title and plain name
+      const expectedTitle = buildFolderTitle(ws.name, ws.emoji || '');
+      const match = localFolders.find(c => !claimedFolderIds.has(c.id) &&
+        (c.title === expectedTitle || c.title === ws.name || extractEmojiPrefix(c.title).name === ws.name)
+      );
       if (match) {
         ws.rootFolderId = match.id;
         this._localState.rootFolderIds[id] = match.id;
@@ -669,15 +813,15 @@ class WorkspaceService {
         this._localState.rootFolderIds[wsId] = folder.id;
         claimedFolderIds.add(folder.id);
         changed = true;
-        // Rename the bookmark folder to match the synced workspace name
+        // Rename the bookmark folder to match the synced workspace name (with emoji prefix)
         try {
-          await bookmarkService.update(folder.id, { title: ws.name });
+          await bookmarkService.update(folder.id, { title: buildFolderTitle(ws.name, ws.emoji || '') });
         } catch { /* folder rename is best-effort */ }
       } else {
         // No unclaimed folders left — create a new one
         const newFolder = await bookmarkService.create({
           parentId: this._arcSpacesRootId,
-          title: ws.name
+          title: buildFolderTitle(ws.name, ws.emoji || '')
         });
         ws.rootFolderId = newFolder.id;
         this._localState.rootFolderIds[wsId] = newFolder.id;
@@ -687,6 +831,171 @@ class WorkspaceService {
 
     if (changed) {
       await this._saveLocal();
+    }
+  }
+
+  /**
+   * Scan the Arc Spaces bookmark folder and adopt any subfolder that
+   * doesn't already have a matching workspace. This handles the reinstall
+   * scenario where sync partially restores (e.g. 1 of 3 workspaces) but
+   * all bookmark folders survive intact.
+   * @returns {Promise<number>} Number of adopted folders
+   */
+  async _adoptOrphanedBookmarkFolders() {
+    // Find Arc Spaces root
+    let rootId = this._arcSpacesRootId;
+    if (!rootId) {
+      rootId = await this._findBestArcSpacesRoot();
+      if (!rootId) return 0;
+    }
+
+    const children = await bookmarkService.getChildren(rootId);
+    const subfolders = children.filter(c => !c.url);
+    if (subfolders.length === 0) return 0;
+
+    // Build set of already-claimed folder IDs
+    const claimedIds = new Set();
+    for (const wsId of this._order) {
+      const ws = this._items[wsId];
+      if (ws && ws.rootFolderId) {
+        claimedIds.add(ws.rootFolderId);
+      }
+    }
+
+    // Find unclaimed subfolders
+    const unclaimed = subfolders.filter(f => !claimedIds.has(f.id));
+    if (unclaimed.length === 0) return 0;
+
+    // Adopt each unclaimed folder as a new workspace
+    const colorOffset = this._order.length;
+    for (let i = 0; i < unclaimed.length; i++) {
+      const folder = unclaimed[i];
+      const wsId = `ws_${Date.now().toString(36)}_${i}`;
+      const colorInfo = WORKSPACE_COLORS[(colorOffset + i) % WORKSPACE_COLORS.length];
+
+      // Extract emoji from folder title prefix (e.g. "🏠 Work" → emoji: "🏠", name: "Work")
+      const { emoji, name } = extractEmojiPrefix(folder.title);
+
+      // Restore shortcuts from __shortcuts__ bookmark folder if present
+      const shortcuts = await this._loadShortcutsFromBookmarks(folder.id);
+
+      const workspace = {
+        id: wsId,
+        name,
+        emoji,
+        icon: 'folder',
+        color: colorInfo.color,
+        colorScheme: colorInfo.name,
+        pinnedBookmarks: [],
+        shortcuts,
+        created: Date.now(),
+      };
+
+      this._items[wsId] = { ...workspace, rootFolderId: folder.id };
+      this._order.push(wsId);
+      this._localState.rootFolderIds[wsId] = folder.id;
+
+      // Save to sync
+      await storageService.saveWorkspaceItem(wsId, this._syncableItem(workspace));
+    }
+
+    // Persist updated meta + local
+    await this._saveMeta();
+    await this._saveLocal();
+
+    console.log(`Arc Spaces: adopted ${unclaimed.length} orphaned bookmark folder(s):`,
+      unclaimed.map(f => f.title));
+    return unclaimed.length;
+  }
+
+  /**
+   * Get folder names from the Arc Spaces bookmark tree.
+   * Used by the reinstall prompt to show all discovered workspace names
+   * (not just the ones from partial sync data).
+   * @returns {Promise<string[]>}
+   */
+  async getBookmarkFolderNames() {
+    const rootId = await this._findBestArcSpacesRoot();
+    if (!rootId) return [];
+    const children = await bookmarkService.getChildren(rootId);
+    return children.filter(c => !c.url).map(c => c.title);
+  }
+
+  // ── Shortcut Bookmark Persistence ─────────────────
+
+  /**
+   * Sync a workspace's shortcuts array to a __shortcuts__ bookmark folder.
+   * One-way sync: shortcuts array → bookmark folder.
+   * Creates the folder lazily on first shortcut.
+   * @param {string} wsId
+   */
+  async _syncShortcutsToBookmarks(wsId) {
+    const ws = this._items[wsId];
+    if (!ws || !ws.rootFolderId) return;
+
+    const shortcuts = ws.shortcuts || [];
+
+    // Find or create __shortcuts__ folder
+    const children = await bookmarkService.getChildren(ws.rootFolderId);
+    let folder = children.find(c => !c.url && c.title === SHORTCUTS_FOLDER_NAME);
+
+    if (shortcuts.length === 0) {
+      // No shortcuts — remove the folder if it exists
+      if (folder) {
+        try { await bookmarkService.removeTree(folder.id); } catch { /* already gone */ }
+      }
+      return;
+    }
+
+    if (!folder) {
+      folder = await bookmarkService.create({
+        parentId: ws.rootFolderId,
+        title: SHORTCUTS_FOLDER_NAME,
+      });
+    }
+
+    // Get current bookmark children
+    const existing = await bookmarkService.getChildren(folder.id);
+    const existingByUrl = new Map(existing.filter(b => b.url).map(b => [b.url, b]));
+    const wantedUrls = new Set(shortcuts.map(s => s.url));
+
+    // Remove bookmarks that are no longer in shortcuts
+    for (const [url, bm] of existingByUrl) {
+      if (!wantedUrls.has(url)) {
+        try { await bookmarkService.remove(bm.id); } catch { /* ok */ }
+      }
+    }
+
+    // Add missing shortcuts as bookmarks
+    for (const shortcut of shortcuts) {
+      if (!existingByUrl.has(shortcut.url)) {
+        await bookmarkService.create({
+          parentId: folder.id,
+          title: shortcut.title || '',
+          url: shortcut.url,
+        });
+      }
+    }
+  }
+
+  /**
+   * Load shortcuts from the __shortcuts__ bookmark folder.
+   * Used during reinstall recovery to restore shortcuts from surviving bookmarks.
+   * @param {string} rootFolderId - The workspace's bookmark folder ID
+   * @returns {Promise<Array<{url: string, title: string}>>}
+   */
+  async _loadShortcutsFromBookmarks(rootFolderId) {
+    try {
+      const children = await bookmarkService.getChildren(rootFolderId);
+      const folder = children.find(c => !c.url && c.title === SHORTCUTS_FOLDER_NAME);
+      if (!folder) return [];
+
+      const bookmarks = await bookmarkService.getChildren(folder.id);
+      return bookmarks
+        .filter(b => b.url)
+        .map(b => ({ url: b.url, title: b.title || '' }));
+    } catch {
+      return [];
     }
   }
 
@@ -735,6 +1044,7 @@ class WorkspaceService {
     const workspace = {
       id,
       name,
+      emoji: '',
       icon: 'folder',
       color: colorInfo.color,
       colorScheme: colorInfo.name,
@@ -760,7 +1070,9 @@ class WorkspaceService {
     const ws = this._items[workspaceId];
     if (!ws) return;
     ws.name = newName;
-    await bookmarkService.update(ws.rootFolderId, { title: newName });
+    // Include emoji prefix in bookmark folder title so it survives reinstall
+    const folderTitle = buildFolderTitle(newName, ws.emoji || '');
+    await bookmarkService.update(ws.rootFolderId, { title: folderTitle });
     await this._saveItem(workspaceId);
     bus.emit(Events.WORKSPACE_RENAMED, ws);
   }
@@ -776,6 +1088,48 @@ class WorkspaceService {
     if (workspaceId === this._localState.activeWorkspaceId) {
       bus.emit(Events.THEME_CHANGED, ws);
     }
+  }
+
+  /**
+   * Reorder workspaces.
+   * @param {string[]} newOrder - Array of workspace IDs in the desired order.
+   *   Must contain exactly the same IDs as this._order (no additions/removals).
+   */
+  async reorder(newOrder) {
+    // Validate: must be same set of IDs
+    if (newOrder.length !== this._order.length) return;
+    const currentSet = new Set(this._order);
+    if (!newOrder.every(id => currentSet.has(id))) return;
+
+    this._order = [...newOrder];
+    await this._saveMeta();
+    bus.emit(Events.WORKSPACE_REORDERED, { order: this._order });
+  }
+
+  /**
+   * Set or clear an emoji icon for a workspace.
+   * Persists to sync and encodes the emoji as a prefix on the bookmark
+   * folder title so it survives extension reinstall.
+   * @param {string} workspaceId
+   * @param {string} emoji - A single emoji character, or '' to clear.
+   */
+  async setEmoji(workspaceId, emoji) {
+    const ws = this._items[workspaceId];
+    if (!ws) return;
+
+    const clean = (emoji || '').trim();
+    ws.emoji = clean;
+
+    // Update bookmark folder title to include/exclude emoji prefix
+    if (ws.rootFolderId) {
+      const newTitle = buildFolderTitle(ws.name, clean);
+      try {
+        await bookmarkService.update(ws.rootFolderId, { title: newTitle });
+      } catch { /* best-effort */ }
+    }
+
+    await this._saveItem(workspaceId);
+    bus.emit(Events.WORKSPACE_RENAMED, ws);
   }
 
   async delete(workspaceId) {
@@ -871,6 +1225,7 @@ class WorkspaceService {
 
     ws.shortcuts.push({ url, title: title || '' });
     await this._saveItem(ws.id);
+    await this._syncShortcutsToBookmarks(ws.id);
     bus.emit(Events.SHORTCUT_ADDED, { url, title, workspaceId: ws.id });
   }
 
@@ -883,6 +1238,7 @@ class WorkspaceService {
     if (!ws || !ws.shortcuts) return;
     ws.shortcuts = ws.shortcuts.filter(s => s.url !== url);
     await this._saveItem(ws.id);
+    await this._syncShortcutsToBookmarks(ws.id);
     bus.emit(Events.SHORTCUT_REMOVED, { url, workspaceId: ws.id });
   }
 
